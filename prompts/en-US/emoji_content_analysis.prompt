@@ -1,3 +1,9 @@
 Input type: {image_type}
 This is an emoji or sticker image. When the input type is GIF, the image is a horizontal strip of distinct frames extracted from an animation; when the input type is STATIC, it is a single static image.
-Extract up to 5 tags describing the main emotion, tone, or common usage scenario. Separate the tags with commas. Return only the plain-text tag list, without explanations or any other content.
+Analyze this emoji or sticker and return 3-5 comma-separated tags.
+
+Requirements:
+1. The first 2-3 tags must describe emotion, attitude, or tone, such as aggrieved, speechless, overwhelmed, self-deprecating, or smug.
+2. Add 1-2 character, IP, or subject tags at the end to summarize the image, such as Nǎilóng, Capoo, a panda meme face, or a cat; use an appearance-based description only when the subject is unclear.
+3. Return concise tag words only; do not return full sentences, scene descriptions, explanations, or meme phrases.
+4. Return exactly these tags separated by commas, without prefixes such as "[emotion]" or any other content.
