@@ -1010,11 +1010,13 @@ class EmojiManager:
                 except Exception as e:
                     logger.error(f"[构建描述] 转换 GIF 图片时出错: {e}")
                     return False, target_emoji
-                prompt: str = (
-                    "这是一个动态图表情包，每一张图代表了动态图的一帧。"
-                    "请只返回该表情包常见的情绪/场景标签，最多 5 个，"
-                    "使用逗号分隔，标签可为中文或英文，不要附带解释。"
-                )
+                prompt: str = """这是一个动态图表情包，每一张图代表了动态图的一帧。请分析这个表情包，输出 3-5 个标签，用逗号分隔。
+
+要求：
+1. 前 2-3 个标签必须是情绪、态度或语气相关标签，例如：委屈、无语、崩溃、自嘲、得意。
+2. 最后补充 1-2 个角色/IP/主体标签，用于概括画面内容，例如：奶龙、猫猫虫咖波、熊猫头、小猫等人物或角色的名字(实在不明确则概括一下外表特征)。
+3. 只允许输出简短的标签词，不要输出完整句子、场景描述、解释或梗句。
+4. 必须且只能输出这几个标签词和逗号，不要添加任何前缀（如“[情绪]”），也不要输出任何其他内容。"""
                 image_base64 = ImageUtils.image_bytes_to_base64(image_bytes)
                 description_result = await emoji_manager_vlm.generate_response_for_image(
                     prompt,
@@ -1024,10 +1026,13 @@ class EmojiManager:
                 )
                 description = description_result.response
             else:
-                prompt: str = (
-                    "这是一个表情包图片，请提取该表情主要表达的情绪或语气标签，"
-                    "最多 5 个，使用逗号分隔，返回纯文本标签列表，不要解释，不要输出其他内容。"
-                )
+                prompt: str = """请分析这个表情包，输出 3-5 个标签，用逗号分隔。
+
+要求：
+1. 前 2-3 个标签必须是情绪、态度或语气相关标签，例如：委屈、无语、崩溃、自嘲、得意。
+2. 最后补充 1-2 个角色/IP/主体标签，用于概括画面内容，例如：奶龙、猫猫虫咖波、熊猫头、小猫等人物或角色的名字(实在不明确则概括一下外表特征)。
+3. 只允许输出简短的标签词，不要输出完整句子、场景描述、解释或梗句。
+4. 必须且只能输出这几个标签词和逗号，不要添加任何前缀（如“[情绪]”），也不要输出任何其他内容。"""
                 description_result = await emoji_manager_vlm.generate_response_for_image(
                     prompt,
                     image_base64,
