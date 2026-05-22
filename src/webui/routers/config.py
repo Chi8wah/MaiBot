@@ -1076,7 +1076,7 @@ def _build_prompt_generator_instruction(request: PromptGeneratorRequest) -> str:
   "personality": "对应 [personality].personality。使用第二人称描述稳定人格、身份和长期特质，建议 80-220 字，不要写成小说设定。",
   "behavior_style": "对应 [personality].behavior_style。只描述何时参与、如何观察局面、如何选择动作以及何时保持安静，不要规定具体说法。",
   "reply_style": "对应 [personality].reply_style。描述麦麦说话方式、回复长度、语气、互动习惯和禁用表达。",
-  "multiple_reply_style": ["可选备用表达风格，每项一段，最多 5 项"],
+  "multiple_reply_style": ["对应 [personality].multiple_reply_style。按一定概率随机整体替换 reply_style 的完整候选表达风格；每项都必须能独立作为完整 reply_style 使用；如果原文没有明确要求随机切换多种完整说话风格，返回空数组。最多 5 项"],
   "group_chat_prompt": "对应 [chat.reply_style].group_chat_prompt。只写群聊场景规则，不要重复人格设定。",
   "private_chat_prompts": "对应 [chat.reply_style].private_chat_prompts。只写私聊场景规则，不要重复人格设定。",
   "chat_prompts": [
@@ -1089,10 +1089,12 @@ def _build_prompt_generator_instruction(request: PromptGeneratorRequest) -> str:
 1. 输出要适合聊天型 bot，像真实聊天参与者，不要像客服、旁白、小说角色卡或系统公告。
 2. personality 放稳定身份与人格；behavior_style 放行动决策偏好；reply_style 放表达风格和边界；chat prompt 放聊天场景规则。不要重复同一段话。
 3. behavior_style 供 Planner 决定是否参与和采取什么动作，不要写具体措辞、口癖或回复文案。
-4. 除非特别提到，reply_style 和 multiple_reply_style 最好不要是特别具体的句式，而是描述性的风格要求，方便覆盖不同话题和场景的回复。
-5. 默认回复应日常、自然、不过度展开；可以保留原文中的鲜明风格，但要改成可维护的配置文字。
-6. 如果信息不足，请根据原文谨慎补全通用聊天规则，并在 notes 中说明需要人工确认，不要反问用户。
-7. 字段值必须都是字符串、字符串数组或对象数组，不能为 null。
+4. reply_style 是默认表达风格，应完整描述常规说话方式、回复长度、语气、互动习惯和禁用表达。multiple_reply_style 不是对 reply_style 的补充说明，而是运行时按概率整体替换 reply_style 的候选完整风格；每一项都必须自包含，不能只写“更活泼一点”“更冷淡一点”等局部修饰。如果用户没有明确要求多种完整风格随机切换，multiple_reply_style 返回空数组。
+5. 不要把同一个主风格拆成多个 multiple_reply_style 项；不要生成互相冲突的人格或语气候选，除非用户原文明确要求随机切换这些完整风格。
+6. 除非特别提到，reply_style 和 multiple_reply_style 最好不要是特别具体的句式，而是描述性的风格要求，方便覆盖不同话题和场景的回复。
+7. 默认回复应日常、自然、不过度展开；可以保留原文中的鲜明风格，但要改成可维护的配置文字。
+8. 如果信息不足，请根据原文谨慎补全通用聊天规则，并在 notes 中说明需要人工确认，不要反问用户。
+9. 字段值必须都是字符串、字符串数组或对象数组，不能为 null。
 
 额外要求：
 {request.extra_requirements.strip() or "无"}
