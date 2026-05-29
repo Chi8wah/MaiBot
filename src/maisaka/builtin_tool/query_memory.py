@@ -217,6 +217,12 @@ async def handle_tool(
             "query_memory 需要提供 query，或至少提供 time_start/time_end 中的一个。",
         )
 
+    requested_mode = mode
+    mode_downgraded_for_missing_time = False
+    if mode in {"time", "hybrid"} and time_start is None and time_end is None:
+        mode = "search"
+        mode_downgraded_for_missing_time = True
+
     session_id = str(runtime.session_id or "").strip()
     platform = str(chat_stream.platform or "").strip()
     user_id = str(chat_stream.user_id or "").strip()
@@ -228,15 +234,16 @@ async def handle_tool(
         group_id=group_id,
     )
     respect_filter = bool(invocation.arguments.get("respect_filter", True))
-    fallback_applied = False
-    fallback_reason = ""
-    fallback_query = ""
+    fallback_applied = mode_downgraded_for_missing_time
+    fallback_reason = "missing_time_range" if mode_downgraded_for_missing_time else ""
+    fallback_query = clean_query if mode_downgraded_for_missing_time else ""
     effective_mode = mode
     primary_hit_count = 0
 
     logger.info(
         f"{runtime.log_prefix} 触发长期记忆检索工具: "
-        f"mode={mode} query={clean_query!r} person_name={person_name!r} person_id={person_id!r}"
+        f"mode={requested_mode} effective_mode={mode} "
+        f"query={clean_query!r} person_name={person_name!r} person_id={person_id!r}"
     )
     try:
         result = await memory_service.search(
@@ -262,7 +269,7 @@ async def handle_tool(
     # 方案2：人物过滤未命中时，降级到关键词检索，避免直接“空结果”。
     if result.success and person_id and not result.filtered and not result.hits and clean_query:
         fallback_applied = True
-        fallback_reason = "person_filter_miss"
+        fallback_reason = "person_filter_miss" if not fallback_reason else f"{fallback_reason};person_filter_miss"
         fallback_query = clean_query
         effective_mode = "search"
         logger.info(
@@ -293,7 +300,7 @@ async def handle_tool(
     structured_content.update(
         {
             "query": clean_query,
-            "mode": mode,
+            "mode": requested_mode,
             "effective_mode": effective_mode,
             "limit": limit,
             "chat_id": session_id,
@@ -321,7 +328,13 @@ async def handle_tool(
 
     content = _build_success_content(result, limit=limit)
     if fallback_applied:
-        content = f"提示：人物定向检索未命中，已自动降级为关键词检索。\n{content}"
+        if "missing_time_range" in fallback_reason and "person_filter_miss" in fallback_reason:
+            fallback_tip = "提示：time/hybrid 未提供时间范围，且人物定向检索未命中，已自动按关键词检索。"
+        elif "missing_time_range" in fallback_reason:
+            fallback_tip = "提示：time/hybrid 未提供时间范围，已自动按 search 模式检索。"
+        else:
+            fallback_tip = "提示：人物定向检索未命中，已自动降级为关键词检索。"
+        content = f"{fallback_tip}\n{content}"
     metadata: Dict[str, Any] = with_memory_feedback_task()
     replyer_memory_reference = _build_replyer_memory_reference(structured_content)
     if replyer_memory_reference:
