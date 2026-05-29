@@ -38,7 +38,7 @@ def get_tool_spec(*, enabled: bool = True) -> ToolSpec:
                 },
                 "mode": {
                     "type": "string",
-                    "description": "search事实偏好，time时间段，episode经历，aggregate整体，hybrid不确定。",
+                    "description": "检索模式：search/time/hybrid/episode/aggregate。`search` 查事实或偏好，也是没有明确时间范围时的默认选择；`time` 查某段时间；`hybrid` 仅在同时需要关键词和时间范围且提供 time_start 或 time_end 时使用；`episode` 查某次经历；`aggregate` 查整体情况。拿不准时用 `search` 或省略 mode。",
                     "enum": sorted(_ALLOWED_QUERY_MODES),
                     "default": "search",
                 },
@@ -48,11 +48,11 @@ def get_tool_spec(*, enabled: bool = True) -> ToolSpec:
                 },
                 "time_start": {
                     "type": "string",
-                    "description": "起始时间。",
+                    "description": "起始时间，可填写时间戳或可解析时间文本。使用 time/hybrid 时必须提供 time_start 或 time_end 至少一个。",
                 },
                 "time_end": {
                     "type": "string",
-                    "description": "结束时间。",
+                    "description": "结束时间，可填写时间戳或可解析时间文本。使用 time/hybrid 时必须提供 time_start 或 time_end 至少一个。",
                 },
                 "respect_filter": {
                     "type": "boolean",
@@ -209,6 +209,12 @@ async def handle_tool(
             "query_memory 需要提供 query，或至少提供 time_start/time_end 中的一个。",
         )
 
+    requested_mode = mode
+    mode_downgraded_for_missing_time = False
+    if mode in {"time", "hybrid"} and time_start is None and time_end is None:
+        mode = "search"
+        mode_downgraded_for_missing_time = True
+
     session_id = str(runtime.session_id or "").strip()
     platform = str(chat_stream.platform or "").strip()
     user_id = str(chat_stream.user_id or "").strip()
@@ -220,15 +226,16 @@ async def handle_tool(
         group_id=group_id,
     )
     respect_filter = bool(invocation.arguments.get("respect_filter", True))
-    fallback_applied = False
-    fallback_reason = ""
-    fallback_query = ""
+    fallback_applied = mode_downgraded_for_missing_time
+    fallback_reason = "missing_time_range" if mode_downgraded_for_missing_time else ""
+    fallback_query = clean_query if mode_downgraded_for_missing_time else ""
     effective_mode = mode
     primary_hit_count = 0
 
     logger.info(
         f"{runtime.log_prefix} 触发长期记忆检索工具: "
-        f"mode={mode} query={clean_query!r} person_name={person_name!r} person_id={person_id!r}"
+        f"mode={requested_mode} effective_mode={mode} "
+        f"query={clean_query!r} person_name={person_name!r} person_id={person_id!r}"
     )
     try:
         result = await memory_service.search(
@@ -260,7 +267,7 @@ async def handle_tool(
         and clean_query
     ):
         fallback_applied = True
-        fallback_reason = "person_filter_miss"
+        fallback_reason = "person_filter_miss" if not fallback_reason else f"{fallback_reason};person_filter_miss"
         fallback_query = clean_query
         effective_mode = "search"
         logger.info(
@@ -294,7 +301,7 @@ async def handle_tool(
     structured_content.update(
         {
             "query": clean_query,
-            "mode": mode,
+            "mode": requested_mode,
             "effective_mode": effective_mode,
             "limit": limit,
             "chat_id": session_id,
@@ -322,10 +329,14 @@ async def handle_tool(
 
     content = _build_success_content(result, limit=limit)
     if fallback_applied:
-        content = (
-            "提示：人物定向检索未命中，已自动降级为关键词检索。\n"
-            f"{content}"
-        )
+        if "missing_time_range" in fallback_reason and "person_filter_miss" in fallback_reason:
+            fallback_tip = "提示：time/hybrid 未提供时间范围，且人物定向检索未命中，已自动按关键词检索。"
+        elif "missing_time_range" in fallback_reason:
+            fallback_tip = "提示：time/hybrid 未提供时间范围，已自动按 search 模式检索。"
+        else:
+            fallback_tip = "提示：人物定向检索未命中，已自动降级为关键词检索。"
+        content = f"{fallback_tip}\n{content}"
+
     metadata: Dict[str, Any] = with_memory_feedback_task()
     replyer_memory_reference = _build_replyer_memory_reference(structured_content)
     if replyer_memory_reference:
