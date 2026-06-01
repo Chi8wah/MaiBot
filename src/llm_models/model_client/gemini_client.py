@@ -1073,6 +1073,7 @@ class GeminiClient(AdapterClient[AsyncIterator[GenerateContentResponse], Generat
                 "contents": contents,
                 "system_instruction": system_instruction,
             }
+            response.provider_request = snapshot_provider_request
             return response, usage_record
         except ReqAbortException:
             raise
@@ -1220,7 +1221,7 @@ class GeminiClient(AdapterClient[AsyncIterator[GenerateContentResponse], Generat
                 raise
             raise wrapped_error from exc
 
-        response = APIResponse(raw_data=raw_response)
+        response = APIResponse(raw_data=raw_response, provider_request=snapshot_provider_request)
         if not raw_response.embeddings:
             exc = RespParseException(raw_response, "Gemini 嵌入响应解析失败，缺少 embeddings 字段。")
             snapshot_path = save_failed_request_snapshot(
@@ -1358,6 +1359,7 @@ class GeminiClient(AdapterClient[AsyncIterator[GenerateContentResponse], Generat
                 raise
             raise wrapped_error from exc
 
+        response.provider_request = snapshot_provider_request
         return response, usage_record
 
     def get_support_image_formats(self) -> List[str]:

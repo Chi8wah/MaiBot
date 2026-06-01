@@ -3,9 +3,11 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
 import asyncio
+import json
 import time
 
 from rich.console import RenderableType
@@ -34,6 +36,7 @@ from src.llm_models.payload_content.context_protocol import ContextProtocolMode
 from src.llm_models.payload_content.native_tool import NativeToolCallSummary
 from src.llm_models.payload_content.resp_format import RespFormat
 from src.llm_models.payload_content.tool_option import ToolCall, ToolDefinitionInput, ToolOption, normalize_tool_options
+from src.llm_models.provider_request_sanitizer import sanitize_provider_request_snapshot
 from src.plugin_runtime.hook_payloads import (
     deserialize_prompt_items,
     serialize_prompt_items,
@@ -86,6 +89,7 @@ CONTEXT_SELECTION_CACHE_STABILITY_RATIO = 2.0
 PLANNER_FINAL_USER_REMINDER_TEMPLATE = (
     "你需要输出对{bot_name}发言的分析，视情况输出文本内容的分析，思考是否进行工具调用"
 )
+DEBUG_PLANNER_CACHE_DIR = Path("logs/debug_planner_cache")
 
 
 @dataclass(slots=True)
@@ -680,6 +684,85 @@ class MaisakaChatLoopService:
         return llm_client
 
     @staticmethod
+    def _build_debug_request_filename(session_id: str, model_name: str, request_kind: str) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        raw_name = f"{timestamp}_{request_kind or 'planner'}_{session_id or 'unknown'}_{model_name or 'unknown'}.json"
+        return "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in raw_name)
+
+    @staticmethod
+    def _serialize_llm_response_body(
+        *,
+        response: str,
+        reasoning: str,
+        model_name: str,
+        tool_calls: Sequence[ToolCall],
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        prompt_cache_hit_tokens: int,
+        prompt_cache_miss_tokens: int,
+    ) -> dict[str, Any]:
+        return {
+            "response": response,
+            "reasoning": reasoning,
+            "model_name": model_name,
+            "tool_calls": serialize_tool_calls(list(tool_calls)),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "prompt_cache_hit_tokens": prompt_cache_hit_tokens,
+            "prompt_cache_miss_tokens": prompt_cache_miss_tokens,
+        }
+
+    def _save_debug_planner_request_body(
+        self,
+        *,
+        request_kind: str,
+        model_name: str,
+        items: Sequence[ContextItem],
+        tool_definitions: Sequence[ToolDefinitionInput],
+        response_format: RespFormat | None,
+        selection_reason: str,
+        selected_history_count: int,
+        response_body: dict[str, Any],
+        final_response_body: dict[str, Any],
+        provider_request: dict[str, Any] | None = None,
+    ) -> None:
+        if request_kind != "planner" or not bool(getattr(global_config.debug, "record_planner_request", False)):
+            return
+
+        try:
+            DEBUG_PLANNER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            request_body = {
+                "model": model_name,
+                "request_type": self._resolve_llm_request_type(request_kind),
+                "request_kind": request_kind,
+                "session_id": self._session_id,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "selected_history_count": selected_history_count,
+                "built_message_count": len(items),
+                "selection_reason": selection_reason,
+                "item_schema_version": CONTEXT_ITEM_SCHEMA_VERSION,
+                "items": serialize_prompt_items(list(items)),
+                "tool_definitions": serialize_tool_definitions(list(tool_definitions)),
+                "response_format": response_format,
+                "response_body": response_body,
+                "final_response_body": final_response_body,
+            }
+            if provider_request is not None:
+                request_body["provider_request"] = sanitize_provider_request_snapshot(provider_request)
+            file_path = DEBUG_PLANNER_CACHE_DIR / self._build_debug_request_filename(
+                self._session_id,
+                model_name,
+                request_kind,
+            )
+            with file_path.open("w", encoding="utf-8") as file:
+                json.dump(request_body, file, ensure_ascii=False, indent=2, default=str)
+            logger.info(f"Planner 请求与回复体已保存: {file_path.resolve()}")
+        except Exception as exc:
+            logger.warning(f"保存 Planner 请求与回复体失败: {exc}")
+
+    @staticmethod
     def _get_runtime_manager() -> Any:
         """获取插件运行时管理器。
 
@@ -1152,6 +1235,39 @@ class MaisakaChatLoopService:
             generation_result.completion_tokens,
         )
         total_tokens = self._coerce_int(after_response_kwargs.get("total_tokens"), generation_result.total_tokens)
+        self._save_debug_planner_request_body(
+            request_kind=request_kind,
+            model_name=generation_result.model_name or "",
+            items=built_messages,
+            tool_definitions=all_tools,
+            response_format=response_format,
+            selection_reason=selection_reason,
+            selected_history_count=len(selected_history),
+            response_body=self._serialize_llm_response_body(
+                response=generation_result.response or "",
+                reasoning=generation_result.reasoning or "",
+                model_name=generation_result.model_name or "",
+                tool_calls=generation_result.tool_calls or [],
+                prompt_tokens=generation_result.prompt_tokens,
+                completion_tokens=generation_result.completion_tokens,
+                total_tokens=generation_result.total_tokens,
+                prompt_cache_hit_tokens=getattr(generation_result, "prompt_cache_hit_tokens", 0) or 0,
+                prompt_cache_miss_tokens=getattr(generation_result, "prompt_cache_miss_tokens", 0) or 0,
+            ),
+            final_response_body=self._serialize_llm_response_body(
+                response=final_response,
+                reasoning=generation_result.reasoning or "",
+                model_name=generation_result.model_name or "",
+                tool_calls=final_tool_calls,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                prompt_cache_hit_tokens=getattr(generation_result, "prompt_cache_hit_tokens", 0) or 0,
+                prompt_cache_miss_tokens=getattr(generation_result, "prompt_cache_miss_tokens", 0) or 0,
+            ),
+            provider_request=getattr(generation_result, "provider_request", None),
+        )
+
         display_model_name = (generation_result.model_name or "").strip()
         prompt_selection_reason = selection_reason
         if display_model_name:

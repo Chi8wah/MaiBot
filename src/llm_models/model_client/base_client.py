@@ -125,6 +125,9 @@ class APIResponse:
     request_wire_payload: Any = field(default=None, repr=False)
     """本次成功请求的最终 wire 载荷，仅用于缓存诊断和可观测性。"""
 
+    provider_request: Dict[str, Any] | None = field(default=None, repr=False)
+    """调用供应商接口时使用的请求快照。"""
+
     @property
     def content(self) -> str | None:
         """只读派生模型可见正文。"""
@@ -203,8 +206,6 @@ class APIResponse:
             prompt_cache_miss_tokens=usage.prompt_cache_miss_tokens if usage is not None else 0,
             output_item_ids=tuple(item.meta.item_id for item in self.output_items),
         )
-
-
 UsageTuple = Tuple[int, ...]
 """统一的使用量元组，顺序为 `(prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens)`。"""
 

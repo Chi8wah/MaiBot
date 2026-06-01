@@ -85,6 +85,7 @@ class LLMResponseResult(BaseDataModel):
     provider_response: Dict[str, Any] | None = field(default=None, repr=False)
     wire_protocol: str = ""
     request_wire_payload: Any = field(default=None, repr=False)
+    provider_request: Dict[str, Any] | None = field(default=None, repr=False)
 
     @property
     def response(self) -> str:
@@ -166,8 +167,6 @@ class LLMResponseResult(BaseDataModel):
             output_items=portable_items,
             **kwargs,
         )
-
-
 @dataclass(slots=True)
 class LLMServiceResult(BaseDataModel):
     """LLM 服务层统一响应对象。"""
