@@ -134,6 +134,9 @@ class APIResponse:
     """图片嵌入客户端计算的协议指纹；自动适配图片嵌入协议时填充，
     编排器据此透传给上层，其余场景保持 None 并沿用默认指纹算法。"""
 
+    provider_request: Dict[str, Any] | None = field(default=None, repr=False)
+    """调用供应商接口时使用的请求快照。"""
+
     @property
     def content(self) -> str | None:
         """只读派生模型可见正文。"""
@@ -212,8 +215,6 @@ class APIResponse:
             prompt_cache_miss_tokens=usage.prompt_cache_miss_tokens if usage is not None else 0,
             output_item_ids=tuple(item.meta.item_id for item in self.output_items),
         )
-
-
 UsageTuple = Tuple[int, ...]
 """统一的使用量元组，顺序为 `(prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, prompt_cache_reported)`。
  Gemini 等不区分缓存的客户端可缩短元组，末位是否存在由消费方按长度判断。"""
