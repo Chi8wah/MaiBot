@@ -303,6 +303,7 @@ class LLMOrchestrator:
     def _build_generation_result(
         response: APIResponse,
         model_name: str,
+        provider_request: Dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         """构建统一的文本响应结果。
 
@@ -328,7 +329,13 @@ class LLMOrchestrator:
             wire_protocol=response.wire_protocol,
             request_wire_payload=response.request_wire_payload,
             request_snapshot=response.request_snapshot,
+            provider_request=provider_request,
         )
+
+    @staticmethod
+    def _extract_provider_request(response: APIResponse) -> Dict[str, Any] | None:
+        provider_request = response.provider_request
+        return provider_request if isinstance(provider_request, dict) else None
 
     async def generate_response_for_image(
         self,
@@ -390,6 +397,7 @@ class LLMOrchestrator:
         return self._build_generation_result(
             response,
             model_info.name,
+            provider_request=self._extract_provider_request(response),
         )
 
     async def generate_response_for_voice(
@@ -485,6 +493,7 @@ class LLMOrchestrator:
         return self._build_generation_result(
             response,
             model_info.name,
+            provider_request=self._extract_provider_request(response),
         )
 
     async def generate_response_with_context_async(
@@ -554,6 +563,7 @@ class LLMOrchestrator:
         return self._build_generation_result(
             response,
             model_info.name,
+            provider_request=self._extract_provider_request(response),
         )
 
     async def generate_response_from_snapshot_async(self, snapshot: ResponseRequest) -> LLMResponseResult:
@@ -1532,7 +1542,7 @@ class LLMOrchestrator:
         """
         detail_lines: List[str] = []
         if e.__cause__:
-            detail_lines.append(f"底层异常: {type(e.__cause__).__name__} | {e.__cause__}")
+            detail_lines.append(f"底层异常类型: {type(e.__cause__).__name__}")
 
         snapshot_info = format_request_snapshot_log_info(e, include_snapshot_path=False)
         if detail_lines or snapshot_info:
