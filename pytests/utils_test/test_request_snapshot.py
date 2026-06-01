@@ -94,7 +94,14 @@ def test_failed_request_snapshot_contains_replay_entry(tmp_path: Path, monkeypat
         internal_request=serialize_response_request_snapshot(request),
         model_info=request.model_info,
         operation="chat.completions.create",
-        provider_request={"request_kwargs": {"model": request.model_info.model_identifier}},
+        provider_request={
+            "request_kwargs": {
+                "extra_body": {"safe": "ok", "nested": {"token": "provider-token"}},
+                "extra_headers": {"Authorization": "Bearer provider-token"},
+                "extra_query": {"api_key": "provider-token"},
+                "model": request.model_info.model_identifier,
+            }
+        },
     )
 
     assert snapshot_path is not None
@@ -105,6 +112,12 @@ def test_failed_request_snapshot_contains_replay_entry(tmp_path: Path, monkeypat
     assert payload["replay"]["file_uri"] == snapshot_path.as_uri()
     assert str(snapshot_path) in payload["replay"]["command"]
     assert "secret-token" not in snapshot_path.read_text(encoding="utf-8")
+    request_kwargs = payload["provider_request"]["request_kwargs"]
+    assert "extra_headers" not in request_kwargs
+    assert "extra_query" not in request_kwargs
+    assert request_kwargs["extra_body"]["safe"] == "ok"
+    assert request_kwargs["extra_body"]["nested"]["token"] == "<redacted>"
+    assert "provider-token" not in snapshot_path.read_text(encoding="utf-8")
 
 
 def test_format_request_snapshot_log_info_includes_help_text_and_replay_command(
