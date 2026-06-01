@@ -66,6 +66,9 @@ class APIResponse:
     raw_data: Any = None
     """响应原始数据"""
 
+    provider_request: Dict[str, Any] | None = None
+    """调用供应商接口时使用的请求快照。"""
+
 
 UsageTuple = Tuple[int, ...]
 """统一的使用量元组，顺序为 `(prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens)`。"""

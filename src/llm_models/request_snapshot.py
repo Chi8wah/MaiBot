@@ -13,6 +13,7 @@ from src.llm_models.model_client.base_client import AudioTranscriptionRequest, E
 from src.llm_models.payload_content.message import ImageMessagePart, Message, MessageBuilder, RoleType, TextMessagePart
 from src.llm_models.payload_content.resp_format import RespFormat, RespFormatType
 from src.llm_models.payload_content.tool_option import ToolCall, ToolOption, normalize_tool_options
+from src.llm_models.provider_request_sanitizer import sanitize_provider_request_snapshot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LLM_REQUEST_LOG_DIR = PROJECT_ROOT / "logs" / "llm_request"
@@ -444,7 +445,7 @@ def save_failed_request_snapshot(
             "internal_request": internal_request,
             "model_info": serialize_model_info_snapshot(model_info),
             "operation": operation,
-            "provider_request": _json_friendly(provider_request),
+            "provider_request": sanitize_provider_request_snapshot(provider_request),
             "snapshot_version": SNAPSHOT_VERSION,
         }
 

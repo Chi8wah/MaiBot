@@ -73,6 +73,7 @@ class LLMResponseResult(BaseDataModel):
     total_tokens: int = 0
     prompt_cache_hit_tokens: int = 0
     prompt_cache_miss_tokens: int = 0
+    provider_request: Dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

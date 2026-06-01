@@ -5,6 +5,8 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Tuple, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -39,6 +41,7 @@ from src.llm_models.exceptions import (
     RespNotOkException,
     RespParseException,
 )
+from src.llm_models.provider_request_sanitizer import sanitize_provider_request_snapshot
 from src.llm_models.openai_compat import (
     build_openai_compatible_client_config,
     split_openai_request_overrides,
@@ -77,6 +80,8 @@ from ..request_snapshot import (
 )
 
 logger = get_logger("llm_models")
+
+DEBUG_REPLY_CACHE_DIR = Path("logs/debug_reply_cache")
 
 SUPPORTED_OPENAI_IMAGE_FORMATS = {"jpeg", "png", "webp"}
 """OpenAI 兼容图片输入稳定支持的格式集合。"""
@@ -131,6 +136,31 @@ PROVIDER_REASONING_KEYS_BY_DOMAIN: Dict[str, str] = {
     "openrouter.ai": "reasoning",
 }
 """按 provider 域名指定的原生推理字段名。"""
+
+
+def _build_debug_provider_request_filename(model_name: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    raw_name = f"provider_{timestamp}_{model_name or 'unknown'}.json"
+    return "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in raw_name)
+
+
+def _save_debug_provider_request_payload(model_name: str, request_payload: Dict[str, Any]) -> None:
+    if model_name != "deepseek-v4p":
+        return
+
+    from src.config.config import global_config
+
+    if not bool(getattr(global_config.debug, "record_reply_request", False)):
+        return
+
+    try:
+        DEBUG_REPLY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        file_path = DEBUG_REPLY_CACHE_DIR / _build_debug_provider_request_filename(model_name)
+        with file_path.open("w", encoding="utf-8") as file:
+            json.dump(sanitize_provider_request_snapshot(request_payload), file, ensure_ascii=False, indent=2)
+        logger.info(f"DeepSeek provider 请求体已保存: {file_path.resolve()}")
+    except Exception as exc:
+        logger.warning(f"保存 DeepSeek provider 请求体失败: {exc}")
 
 
 def _build_fallback_tool_call_id(prefix: str) -> str:
@@ -893,6 +923,10 @@ def _snapshot_openai_argument(value: Any | Omit) -> Any | None:
     return value
 
 
+def _attach_provider_request_snapshot(api_response: APIResponse, provider_request: Dict[str, Any]) -> None:
+    api_response.provider_request = provider_request
+
+
 def _build_api_status_message(error: APIStatusError) -> str:
     """构建更适合记录和展示的状态错误信息。
 
@@ -1404,7 +1438,9 @@ class OpenaiClient(AdapterClient[AsyncStream[ChatCompletionChunk], ChatCompletio
                     AsyncStream[ChatCompletionChunk],
                     await await_task_with_interrupt(stream_task, request.interrupt_flag),
                 )
-                return await stream_response_handler(raw_response, request.interrupt_flag)
+                api_response, usage_record = await stream_response_handler(raw_response, request.interrupt_flag)
+                _attach_provider_request_snapshot(api_response, snapshot_provider_request)
+                return api_response, usage_record
 
             completion_task: asyncio.Task[ChatCompletion] = asyncio.create_task(
                 self.client.chat.completions.create(
@@ -1424,7 +1460,9 @@ class OpenaiClient(AdapterClient[AsyncStream[ChatCompletionChunk], ChatCompletio
                 ChatCompletion,
                 await await_task_with_interrupt(completion_task, request.interrupt_flag),
             )
-            return response_parser(raw_response)
+            api_response, usage_record = response_parser(raw_response)
+            _attach_provider_request_snapshot(api_response, snapshot_provider_request)
+            return api_response, usage_record
         except (EmptyResponseException, RespParseException) as exc:
             snapshot_path = save_failed_request_snapshot(
                 api_provider=self.api_provider,

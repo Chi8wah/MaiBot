@@ -210,6 +210,7 @@ class LLMOrchestrator:
         model_name: str,
         tool_calls: List[ToolCall] | None,
         usage: UsageRecord | None = None,
+        provider_request: Dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         """构建统一的文本响应结果。
 
@@ -232,7 +233,13 @@ class LLMOrchestrator:
             total_tokens=usage.total_tokens if usage is not None else 0,
             prompt_cache_hit_tokens=usage.prompt_cache_hit_tokens if usage is not None else 0,
             prompt_cache_miss_tokens=usage.prompt_cache_miss_tokens if usage is not None else 0,
+            provider_request=provider_request,
         )
+
+    @staticmethod
+    def _extract_provider_request(response: APIResponse) -> Dict[str, Any] | None:
+        provider_request = response.provider_request
+        return provider_request if isinstance(provider_request, dict) else None
 
     async def generate_response_for_image(
         self,
@@ -301,6 +308,7 @@ class LLMOrchestrator:
             model_info.name,
             tool_calls,
             response.usage,
+            self._extract_provider_request(response),
         )
 
     async def generate_response_for_voice(self, voice_base64: str) -> LLMAudioTranscriptionResult:
@@ -394,6 +402,7 @@ class LLMOrchestrator:
             model_info.name,
             tool_calls,
             response.usage,
+            self._extract_provider_request(response),
         )
 
     async def generate_response_with_message_async(
@@ -468,6 +477,7 @@ class LLMOrchestrator:
             model_info.name,
             tool_calls,
             response.usage,
+            self._extract_provider_request(response),
         )
 
     async def get_embedding(self, embedding_input: str, *, session_id: str = "") -> LLMEmbeddingResult:
@@ -1098,7 +1108,7 @@ class LLMOrchestrator:
         """
         detail_lines: List[str] = []
         if e.__cause__:
-            detail_lines.append(f"底层异常: {type(e.__cause__).__name__} | {e.__cause__}")
+            detail_lines.append(f"底层异常类型: {type(e.__cause__).__name__}")
 
         snapshot_info = format_request_snapshot_log_info(e)
         if detail_lines or snapshot_info:
