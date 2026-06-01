@@ -82,6 +82,9 @@ if TYPE_CHECKING:
 
 logger = get_logger("maisaka_reasoning_engine")
 
+PLANNER_EMPTY_TOOL_CALL_RETRY_LIMIT = 10
+PLANNER_EMPTY_TOOL_CALL_PREVIEW_LIMIT = 500
+
 HISTORY_DEFERRED_TOOL_RESULT_NAMES = {"wait"}
 TOOL_RESULT_MEDIA_TYPES = {"image", "audio", "resource_link", "resource", "binary"}
 BEHAVIOR_SELECTOR_CONTEXT_MESSAGE_LIMIT = 8
@@ -709,13 +712,65 @@ class MaisakaReasoningEngine:
         )
         state.current_stage_started_at = planner_started_at
         state.action_tool_count = len(action_tool_definitions)
-        response = await self._run_interruptible_planner(
-            injected_user_messages=injected_user_messages or None,
-            tail_user_messages=self._runtime.build_focus_tail_user_messages() or None,
-            tool_definitions=action_tool_definitions,
-        )
+        planner_duration_ms = 0.0
+        empty_tool_call_retry_count = 0
+        while True:
+            attempt_injected_user_messages = list(injected_user_messages or [])
+            if empty_tool_call_retry_count > 0:
+                attempt_injected_user_messages.append(
+                    self._build_empty_tool_call_retry_message(
+                        empty_tool_call_retry_count,
+                        PLANNER_EMPTY_TOOL_CALL_RETRY_LIMIT,
+                    )
+                )
+
+            attempt_started_at = time.time()
+            response = await self._run_interruptible_planner(
+                injected_user_messages=attempt_injected_user_messages or None,
+                tail_user_messages=self._runtime.build_focus_tail_user_messages() or None,
+                tool_definitions=action_tool_definitions,
+            )
+            planner_duration_ms += (time.time() - attempt_started_at) * 1000
+            state.planner_duration_ms = planner_duration_ms
+
+            if response.tool_calls:
+                if empty_tool_call_retry_count > 0:
+                    logger.info(
+                        f"{self._runtime.log_prefix} Planner 工具调用格式纠错成功: "
+                        f"重试次数={empty_tool_call_retry_count} "
+                        f"tool_calls={len(response.tool_calls)}"
+                    )
+                    state.planner_extra_lines.append(
+                        f"工具调用格式纠错：第 {empty_tool_call_retry_count} 次重试成功"
+                    )
+                break
+
+            if not self._should_retry_empty_tool_call_format(response, action_tool_definitions):
+                break
+
+            if empty_tool_call_retry_count >= PLANNER_EMPTY_TOOL_CALL_RETRY_LIMIT:
+                preview = self._build_empty_tool_call_response_preview(response.content)
+                logger.error(
+                    f"{self._runtime.log_prefix} Planner 连续未返回有效 tool_calls，放弃本轮: "
+                    f"重试次数={empty_tool_call_retry_count} 最后响应={preview}"
+                )
+                state.planner_extra_lines.extend(
+                    [
+                        f"状态：Planner 连续 {empty_tool_call_retry_count} 次重试后仍未返回有效 tool_calls",
+                        f"最后响应长度：{len(str(response.content or ''))}",
+                    ]
+                )
+                break
+
+            empty_tool_call_retry_count += 1
+            preview = self._build_empty_tool_call_response_preview(response.content)
+            logger.warning(
+                f"{self._runtime.log_prefix} Planner 未返回有效 tool_calls，准备纠错重试: "
+                f"第 {empty_tool_call_retry_count}/{PLANNER_EMPTY_TOOL_CALL_RETRY_LIMIT} 次 "
+                f"响应预览={preview}"
+            )
+
         state.response = response
-        state.planner_duration_ms = (time.time() - planner_started_at) * 1000
 
     async def _refresh_mid_term_memory_reference_for_continuation(self, cycle_detail: CycleDetail) -> None:
         """在一次连续 Planner 循环开始前刷新一次聊天回想参考。"""
@@ -804,6 +859,45 @@ class MaisakaReasoningEngine:
         if reasoning_content:
             return reasoning_content
         return str(response.content or "").strip()
+
+    @staticmethod
+    def _build_empty_tool_call_retry_message(retry_index: int, max_retries: int) -> str:
+        return (
+            "上一轮 Planner 响应疑似把工具调用写成正文，系统不会执行该响应。"
+            f"这是第 {retry_index}/{max_retries} 次工具调用格式纠错重试。\n"
+            "Planner 每一轮必须通过当前可用工具返回 tool_calls。"
+            "不要把工具调用写成正文、XML、JSON、<tool_call>、<tool_calls>、<tool_invocation_string> 或函数调用文本。"
+            "如果需要继续搜集信息，请直接调用对应工具；如果不需要更多动作，请不要输出伪工具调用文本。"
+            "所有参数必须严格符合 tool_definitions 中声明的字段。"
+        )
+
+    @staticmethod
+    def _build_empty_tool_call_response_preview(content: str | None) -> str:
+        preview = str(content or "").strip().replace("\n", "\\n")
+        if len(preview) > PLANNER_EMPTY_TOOL_CALL_PREVIEW_LIMIT:
+            return preview[:PLANNER_EMPTY_TOOL_CALL_PREVIEW_LIMIT] + "..."
+        return preview or "<empty>"
+
+    @staticmethod
+    def _should_retry_empty_tool_call_format(response: ChatResponse, tool_definitions: Any) -> bool:
+        """判断无 tool_calls 响应是否像格式错误的工具调用文本。"""
+
+        if response.tool_calls or not tool_definitions:
+            return False
+        content = str(response.content or "").strip()
+        if not content:
+            return False
+        lowered_content = content.lower()
+        format_markers = (
+            "<tool_call",
+            "<tool_calls",
+            "<tool_invocation",
+            "tool_calls",
+            "function_call",
+            "\"arguments\"",
+            "'arguments'",
+        )
+        return any(marker in lowered_content for marker in format_markers)
 
     @staticmethod
     def _cycle_end_for_pause_tool(pause_tool_name: Optional[str]) -> CycleEnd:
@@ -1033,8 +1127,11 @@ class MaisakaReasoningEngine:
                             #     f"回合={round_index + 1} "
                             #     f"耗时={cycle_detail.time_records['planner']:.3f} 秒"
                             # )
+                            if state.response is None:
+                                raise RuntimeError("Planner request completed without a response")
+                            response = state.response
                             planner_no_tool_count, should_break_after_action = await self._handle_planner_response_actions(
-                                response=state.response,
+                                response=response,
                                 cycle_detail=cycle_detail,
                                 state=state,
                                 planner_no_tool_count=planner_no_tool_count,
