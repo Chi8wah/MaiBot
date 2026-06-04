@@ -20,6 +20,7 @@ from src.core.tooling import ToolAvailabilityContext, ToolRegistry
 from src.llm_models.model_client.base_client import BaseClient
 from src.llm_models.payload_content.message import Message, MessageBuilder, RoleType
 from src.llm_models.provider_request_sanitizer import sanitize_provider_request_snapshot
+from src.llm_models.request_snapshot import REPLAY_SCRIPT_RELATIVE_PATH
 from src.llm_models.payload_content.resp_format import RespFormat
 from src.llm_models.payload_content.tool_option import ToolCall, ToolDefinitionInput, ToolOption, normalize_tool_options
 from src.plugin_runtime.hook_payloads import (
@@ -72,6 +73,14 @@ PROMPT_PREVIEW_CATEGORY_BY_REQUEST_KIND = {
 }
 CONTEXT_SELECTION_CACHE_STABILITY_RATIO = 2.0
 DEBUG_PLANNER_CACHE_DIR = Path("logs/debug_planner_cache")
+REPLAY_SNAPSHOT_FIELDS = (
+    "api_provider",
+    "client_type",
+    "internal_request",
+    "model_info",
+    "operation",
+    "snapshot_version",
+)
 
 
 @dataclass(slots=True)
@@ -603,12 +612,18 @@ class MaisakaChatLoopService:
         response_body: dict[str, Any],
         final_response_body: dict[str, Any],
         provider_request: dict[str, Any] | None = None,
+        request_snapshot: dict[str, Any] | None = None,
     ) -> None:
         if request_kind != "planner" or not bool(getattr(global_config.debug, "record_planner_request", False)):
             return
 
         try:
             DEBUG_PLANNER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            file_path = DEBUG_PLANNER_CACHE_DIR / self._build_debug_request_filename(
+                self._session_id,
+                model_name,
+                request_kind,
+            )
             request_body = {
                 "model": model_name,
                 "request_type": self._resolve_llm_request_type(request_kind),
@@ -624,16 +639,19 @@ class MaisakaChatLoopService:
                 "response_body": response_body,
                 "final_response_body": final_response_body,
             }
+            if request_snapshot is not None:
+                for field_name in REPLAY_SNAPSHOT_FIELDS:
+                    if field_name in request_snapshot:
+                        request_body[field_name] = request_snapshot[field_name]
+                request_body["replay"] = {
+                    "command": f'uv run python {REPLAY_SCRIPT_RELATIVE_PATH.as_posix()} "{file_path.as_posix()}"',
+                    "script_path": REPLAY_SCRIPT_RELATIVE_PATH.as_posix(),
+                }
             if provider_request is not None:
                 request_body["provider_request"] = sanitize_provider_request_snapshot(provider_request)
-            file_path = DEBUG_PLANNER_CACHE_DIR / self._build_debug_request_filename(
-                self._session_id,
-                model_name,
-                request_kind,
-            )
             with file_path.open("w", encoding="utf-8") as file:
                 json.dump(request_body, file, ensure_ascii=False, indent=2, default=str)
-            logger.info(f"Planner 请求与回复体已保存: {file_path.resolve()}")
+            logger.info(f"Planner 请求与回复体已保存（包含提示内容，可使用当前配置发起真实 replay）: {file_path.resolve()}")
         except Exception as exc:
             logger.warning(f"保存 Planner 请求与回复体失败: {exc}")
 
@@ -1081,6 +1099,7 @@ class MaisakaChatLoopService:
                 prompt_cache_miss_tokens=getattr(generation_result, "prompt_cache_miss_tokens", 0) or 0,
             ),
             provider_request=getattr(generation_result, "provider_request", None),
+            request_snapshot=getattr(generation_result, "request_snapshot", None),
         )
 
         display_model_name = (generation_result.model_name or "").strip()

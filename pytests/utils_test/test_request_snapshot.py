@@ -1,3 +1,4 @@
+from importlib import util
 from pathlib import Path
 
 import json
@@ -16,6 +17,8 @@ from src.llm_models.request_snapshot import (
     serialize_response_request_snapshot,
 )
 from src.llm_models import request_snapshot
+from src.maisaka import chat_loop_service as chat_loop_service_module
+from src.maisaka.chat_loop_service import MaisakaChatLoopService
 
 
 def _build_api_provider() -> APIProvider:
@@ -146,3 +149,105 @@ def test_format_request_snapshot_log_info_includes_help_text_and_replay_command(
     assert "请求快照链接" not in log_info
     assert snapshot_path.as_uri() not in log_info
     assert "使用以下命令重新请求: uv run python scripts/replay_llm_request.py" in log_info
+
+
+def test_debug_planner_cache_keeps_replay_snapshot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chat_loop_service_module, "DEBUG_PLANNER_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(chat_loop_service_module.global_config.debug, "record_planner_request", True)
+
+    service = MaisakaChatLoopService(session_id="session/1")
+    request_snapshot = {
+        "api_provider": {"name": "Demo", "client_type": "openai"},
+        "client_type": "openai",
+        "messages": [{"role": "user", "content": "must not overwrite diagnostics"}],
+        "internal_request": {
+            "extra_params": {"top_p": 0.95},
+            "max_tokens": 256,
+            "message_list": [
+                {
+                    "role": "system",
+                    "parts": [{"type": "text", "text": "pick a tool"}],
+                    "tool_calls": [],
+                }
+            ],
+            "model_info": {
+                "api_provider": "Demo",
+                "extra_params": {},
+                "force_stream_mode": False,
+                "max_tokens": None,
+                "model_identifier": "demo-model-id",
+                "name": "demo-model",
+                "temperature": None,
+                "visual": False,
+            },
+            "request_kind": "response",
+            "response_format": None,
+            "temperature": 0.6,
+            "tool_options": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "finish",
+                        "description": "finish planning",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        },
+        "model_info": {
+            "api_provider": "Demo",
+            "extra_params": {},
+            "force_stream_mode": False,
+            "max_tokens": None,
+            "model_identifier": "demo-model-id",
+            "name": "demo-model",
+            "temperature": None,
+            "visual": False,
+        },
+        "operation": "chat.completions.create",
+        "request_type": "must_not_overwrite",
+        "response_format": None,
+        "response_body": {"must_not": "overwrite"},
+        "snapshot_version": 1,
+        "tool_definitions": [{"name": "must_not_overwrite"}],
+    }
+
+    service._save_debug_planner_request_body(
+        request_kind="planner",
+        model_name="demo-model",
+        messages=[],
+        tool_definitions=[],
+        response_format=None,
+        selection_reason="test",
+        selected_history_count=0,
+        response_body={"raw": "response"},
+        final_response_body={"final": "response"},
+        provider_request={"request_kwargs": {"max_tokens": "<redacted>"}},
+        request_snapshot=request_snapshot,
+    )
+
+    snapshot_files = list(tmp_path.glob("*.json"))
+    assert len(snapshot_files) == 1
+    payload = json.loads(snapshot_files[0].read_text(encoding="utf-8"))
+    assert payload["request_kind"] == "planner"
+    assert payload["request_type"] == "maisaka.planner"
+    assert payload["internal_request"]["request_kind"] == "response"
+    assert payload["internal_request"]["max_tokens"] == 256
+    assert payload["provider_request"]["request_kwargs"]["max_tokens"] == "<redacted>"
+    assert payload["messages"] == []
+    assert payload["tool_definitions"] == []
+    assert payload["response_body"] == {"raw": "response"}
+    assert payload["final_response_body"] == {"final": "response"}
+    assert payload["replay"]["command"].endswith(f'"{snapshot_files[0].as_posix()}"')
+    assert "file_uri" not in payload["replay"]
+
+    replay_script = Path(__file__).resolve().parents[2] / "scripts" / "replay_llm_request.py"
+    spec = util.spec_from_file_location("replay_llm_request", replay_script)
+    assert spec is not None and spec.loader is not None
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    request = module._build_response_request(payload["internal_request"])
+    assert request.max_tokens == 256
+    assert request.model_info.name == "demo-model"
+    assert len(request.message_list) == 1
+    assert len(request.tool_options or []) == 1
