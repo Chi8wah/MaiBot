@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import base64
 import binascii
@@ -44,7 +44,7 @@ from src.llm_models.payload_content.context_item import (
     SystemMessageItem,
     UserMessageItem,
 )
-from src.llm_models.payload_content.resp_format import RespFormat, RespFormatType
+from src.llm_models.payload_content.resp_format import JsonSchema, RespFormat, RespFormatType
 from src.llm_models.payload_content.tool_option import ToolCall, ToolOption, normalize_tool_options
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +92,47 @@ def _json_friendly(value: Any) -> Any:
 
     return str(value)
 
+
+def _sanitized_json_friendly(value: Any) -> Any:
+    """Convert a snapshot value to JSON and redact secret-like fields."""
+
+    return _sanitize_provider_request(_json_friendly(value))
+
+
+def extract_error_response_body(error: Exception) -> Any | None:
+    """尽量从异常对象中提取上游返回体，便于排查模型请求失败。"""
+    candidate_errors = [error, getattr(error, "__cause__", None)]
+
+    for candidate in candidate_errors:
+        if candidate is None:
+            continue
+
+        response = getattr(candidate, "response", None)
+        if response is not None:
+            response_json = getattr(response, "json", None)
+            if callable(response_json):
+                try:
+                    return _json_friendly(response_json())
+                except Exception:
+                    pass
+
+            response_text = getattr(response, "text", None)
+            if response_text not in (None, ""):
+                return str(response_text)
+
+            response_content = getattr(response, "content", None)
+            if response_content not in (None, b"", ""):
+                return _json_friendly(response_content)
+
+        response_body = getattr(candidate, "body", None)
+        if response_body not in (None, "", b""):
+            return _json_friendly(response_body)
+
+        ext_info = getattr(candidate, "ext_info", None)
+        if ext_info is not None:
+            return _json_friendly(ext_info)
+
+    return None
 
 def _sanitize_filename_component(value: str) -> str:
     """将任意字符串转换为适合文件名使用的片段。"""
@@ -608,7 +649,7 @@ def serialize_model_info_snapshot(model_info: ModelInfo) -> dict[str, Any]:
     """序列化模型信息。"""
     return {
         "api_provider": model_info.api_provider,
-        "extra_params": _json_friendly(dict(model_info.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(model_info.extra_params)),
         "force_stream_mode": model_info.force_stream_mode,
         "max_tokens": model_info.max_tokens,
         "model_identifier": model_info.model_identifier,
@@ -657,7 +698,7 @@ def deserialize_response_format_snapshot(raw_response_format: Any) -> RespFormat
 
     format_type = RespFormatType(raw_format_type)
     raw_schema = raw_response_format.get("schema")
-    schema = raw_schema if isinstance(raw_schema, dict) else None
+    schema = cast(JsonSchema, cast(object, raw_schema)) if isinstance(raw_schema, dict) else None
     return RespFormat(format_type=format_type, schema=schema)
 
 
@@ -681,7 +722,7 @@ def serialize_response_request_snapshot(request: ResponseRequest) -> dict[str, A
     """序列化文本/多模态请求。"""
     return {
         "item_schema_version": CONTEXT_ITEM_SCHEMA_VERSION,
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "max_tokens": request.max_tokens,
         "context_items": serialize_context_items_snapshot(request.context_items),
         "logical_turn_id": request.logical_turn_id,
@@ -697,7 +738,7 @@ def serialize_embedding_request_snapshot(request: EmbeddingRequest) -> dict[str,
     """序列化嵌入请求。"""
     return {
         "embedding_input": request.embedding_input,
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "model_info": serialize_model_info_snapshot(request.model_info),
         "request_kind": "embedding",
     }
@@ -707,7 +748,7 @@ def serialize_audio_request_snapshot(request: AudioTranscriptionRequest) -> dict
     """序列化音频转写请求。"""
     return {
         "audio_base64": request.audio_base64,
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "max_tokens": request.max_tokens,
         "model_info": serialize_model_info_snapshot(request.model_info),
         "request_kind": "audio_transcription",
