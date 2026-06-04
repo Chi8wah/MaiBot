@@ -22,7 +22,14 @@ from src.llm_models.request_snapshot import (
     deserialize_model_info_snapshot,
     deserialize_response_format_snapshot,
     deserialize_tool_options_snapshot,
+    serialize_api_provider_snapshot,
+    serialize_messages_snapshot,
+    serialize_model_info_snapshot,
+    serialize_tool_options_snapshot,
 )
+from src.llm_models.payload_content.tool_option import normalize_tool_options
+from src.plugin_runtime.hook_payloads import deserialize_prompt_messages
+from src.services.service_task_resolver import get_available_models
 
 
 def _load_snapshot(snapshot_path: Path) -> dict[str, Any]:
@@ -37,6 +44,74 @@ def _resolve_api_provider(provider_name: str):
         if api_provider.name == provider_name:
             return api_provider
     raise ValueError(f"当前配置中不存在名为 {provider_name!r} 的 API Provider")
+
+
+def _resolve_model_info(model_name: str):
+    """根据模型名称或模型标识符解析当前配置中的模型。"""
+    normalized_model_name = str(model_name or "").strip()
+    model_config = config_manager.get_model_config()
+    for model_info in model_config.models:
+        if model_info.name == normalized_model_name:
+            return model_info
+    for model_info in model_config.models:
+        if model_info.model_identifier == normalized_model_name:
+            return model_info
+    raise ValueError(f"当前配置中不存在名为或标识符为 {normalized_model_name!r} 的模型")
+
+
+def _resolve_task_max_tokens(request_kind: str) -> int | None:
+    """从当前任务配置中解析旧 planner cache 缺失的 max_tokens。"""
+    task_name = str(request_kind or "planner").strip() or "planner"
+    task_config = get_available_models().get(task_name)
+    if task_config is None:
+        return None
+    return task_config.max_tokens
+
+
+def _build_snapshot_from_planner_cache(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """将旧版 planner debug cache 转换成 replay 脚本原生快照。"""
+    raw_provider_request = snapshot.get("provider_request")
+    provider_request: dict[str, Any] = raw_provider_request if isinstance(raw_provider_request, dict) else {}
+    raw_request_kwargs = provider_request.get("request_kwargs")
+    request_kwargs: dict[str, Any] = raw_request_kwargs if isinstance(raw_request_kwargs, dict) else {}
+    model_info = _resolve_model_info(str(snapshot.get("model") or request_kwargs.get("model") or ""))
+    api_provider = _resolve_api_provider(model_info.api_provider)
+    request_kind = str(snapshot.get("request_kind") or "planner")
+
+    raw_max_tokens = request_kwargs.get("max_tokens")
+    max_tokens = raw_max_tokens if isinstance(raw_max_tokens, int) else _resolve_task_max_tokens(request_kind)
+    response_format = snapshot.get("response_format") if isinstance(snapshot.get("response_format"), dict) else None
+
+    messages = deserialize_prompt_messages(snapshot.get("messages") or [])
+    tool_options = normalize_tool_options(snapshot.get("tool_definitions") or [])
+    internal_request = {
+        "extra_params": dict(request_kwargs.get("extra_body") or {}),
+        "max_tokens": max_tokens,
+        "message_list": serialize_messages_snapshot(messages),
+        "model_info": serialize_model_info_snapshot(model_info),
+        "request_kind": "response",
+        "response_format": response_format,
+        "temperature": request_kwargs.get("temperature"),
+        "tool_options": serialize_tool_options_snapshot(tool_options),
+    }
+    return {
+        **snapshot,
+        "api_provider": serialize_api_provider_snapshot(api_provider),
+        "client_type": api_provider.client_type,
+        "internal_request": internal_request,
+        "model_info": serialize_model_info_snapshot(model_info),
+        "operation": provider_request.get("operation") or "chat.completions.create",
+        "snapshot_version": snapshot.get("snapshot_version") or 1,
+    }
+
+
+def _normalize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """兼容新 replay 快照与旧 planner debug cache。"""
+    if isinstance(snapshot.get("internal_request"), dict) and isinstance(snapshot.get("api_provider"), dict):
+        return snapshot
+    if isinstance(snapshot.get("messages"), list) and isinstance(snapshot.get("tool_definitions"), list):
+        return _build_snapshot_from_planner_cache(snapshot)
+    return snapshot
 
 
 def _build_response_request(snapshot: dict[str, Any]) -> ResponseRequest:
@@ -74,7 +149,7 @@ def _build_audio_request(snapshot: dict[str, Any]) -> AudioTranscriptionRequest:
 async def _replay(snapshot_path: Path) -> int:
     """回放一条失败请求快照。"""
     config_manager.initialize()
-    snapshot = _load_snapshot(snapshot_path)
+    snapshot = _normalize_snapshot(_load_snapshot(snapshot_path))
 
     internal_request = snapshot.get("internal_request")
     if not isinstance(internal_request, dict):
