@@ -18,7 +18,6 @@ from src.llm_models.provider_request_sanitizer import sanitize_provider_request_
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LLM_REQUEST_LOG_DIR = PROJECT_ROOT / "logs" / "llm_request"
 REPLAY_SCRIPT_RELATIVE_PATH = Path("scripts") / "replay_llm_request.py"
-REPLAY_SCRIPT_PATH = PROJECT_ROOT / REPLAY_SCRIPT_RELATIVE_PATH
 FILENAME_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 SNAPSHOT_VERSION = 1
 DEFAULT_LLM_REQUEST_SNAPSHOT_LIMIT = 128
@@ -58,6 +57,12 @@ def _json_friendly(value: Any) -> Any:
         return _json_friendly(to_dict())
 
     return str(value)
+
+
+def _sanitized_json_friendly(value: Any) -> Any:
+    """Convert a snapshot value to JSON and redact secret-like fields."""
+
+    return sanitize_provider_request_snapshot(_json_friendly(value))
 
 
 def extract_error_response_body(error: Exception) -> Any | None:
@@ -260,7 +265,7 @@ def serialize_model_info_snapshot(model_info: ModelInfo) -> dict[str, Any]:
     """序列化模型信息。"""
     return {
         "api_provider": model_info.api_provider,
-        "extra_params": _json_friendly(dict(model_info.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(model_info.extra_params)),
         "force_stream_mode": model_info.force_stream_mode,
         "max_tokens": model_info.max_tokens,
         "model_identifier": model_info.model_identifier,
@@ -330,7 +335,7 @@ def deserialize_tool_options_snapshot(raw_tool_options: Any) -> list[ToolOption]
 def serialize_response_request_snapshot(request: ResponseRequest) -> dict[str, Any]:
     """序列化文本/多模态请求。"""
     return {
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "max_tokens": request.max_tokens,
         "message_list": serialize_messages_snapshot(request.message_list),
         "model_info": serialize_model_info_snapshot(request.model_info),
@@ -345,7 +350,7 @@ def serialize_embedding_request_snapshot(request: EmbeddingRequest) -> dict[str,
     """序列化嵌入请求。"""
     return {
         "embedding_input": request.embedding_input,
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "model_info": serialize_model_info_snapshot(request.model_info),
         "request_kind": "embedding",
     }
@@ -355,7 +360,7 @@ def serialize_audio_request_snapshot(request: AudioTranscriptionRequest) -> dict
     """序列化音频转写请求。"""
     return {
         "audio_base64": request.audio_base64,
-        "extra_params": _json_friendly(dict(request.extra_params)),
+        "extra_params": _sanitized_json_friendly(dict(request.extra_params)),
         "max_tokens": request.max_tokens,
         "model_info": serialize_model_info_snapshot(request.model_info),
         "request_kind": "audio_transcription",
@@ -371,8 +376,8 @@ def serialize_api_provider_snapshot(api_provider: APIProvider) -> dict[str, Any]
         "auth_type": api_provider.auth_type,
         "base_url": api_provider.base_url,
         "client_type": api_provider.client_type,
-        "default_headers": _json_friendly(dict(api_provider.default_headers)),
-        "default_query": _json_friendly(dict(api_provider.default_query)),
+        "default_headers": _sanitized_json_friendly(dict(api_provider.default_headers)),
+        "default_query": _sanitized_json_friendly(dict(api_provider.default_query)),
         "model_list_endpoint": api_provider.model_list_endpoint,
         "name": api_provider.name,
         "organization": api_provider.organization,
@@ -382,9 +387,18 @@ def serialize_api_provider_snapshot(api_provider: APIProvider) -> dict[str, Any]
     }
 
 
+def _format_snapshot_path_for_display(snapshot_path: Path) -> str:
+    """Return a replay-friendly path without leaking absolute local paths."""
+
+    try:
+        return snapshot_path.resolve().relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return snapshot_path.name
+
+
 def build_replay_command(snapshot_path: Path) -> str:
     """构建回放当前快照的命令。"""
-    return f'uv run python {REPLAY_SCRIPT_RELATIVE_PATH.as_posix()} "{snapshot_path.resolve()}"'
+    return f'uv run python {REPLAY_SCRIPT_RELATIVE_PATH.as_posix()} "{_format_snapshot_path_for_display(snapshot_path)}"'
 
 
 def _get_llm_request_snapshot_limit() -> int:
@@ -455,8 +469,7 @@ def save_failed_request_snapshot(
 
         snapshot_payload["replay"] = {
             "command": build_replay_command(snapshot_path),
-            "file_uri": snapshot_path.as_uri(),
-            "script_path": str(REPLAY_SCRIPT_PATH),
+            "script_path": REPLAY_SCRIPT_RELATIVE_PATH.as_posix(),
         }
 
         snapshot_path.write_text(
@@ -475,8 +488,7 @@ def attach_request_snapshot(exception: Exception, snapshot_path: Path | None) ->
     if snapshot_path is None:
         return
 
-    exception.request_snapshot_path = str(snapshot_path.resolve())
-    exception.request_snapshot_uri = snapshot_path.resolve().as_uri()
+    exception.request_snapshot_path = _format_snapshot_path_for_display(snapshot_path)
     exception.request_snapshot_replay_command = build_replay_command(snapshot_path)
 
 

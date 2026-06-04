@@ -17,6 +17,7 @@ from src.llm_models.request_snapshot import (
     serialize_response_request_snapshot,
 )
 from src.llm_models import request_snapshot
+from src.llm_models.utils_model import LLMOrchestrator
 from src.maisaka import chat_loop_service as chat_loop_service_module
 from src.maisaka.chat_loop_service import MaisakaChatLoopService
 
@@ -25,6 +26,8 @@ def _build_api_provider() -> APIProvider:
     return APIProvider(
         api_key="secret-token",
         base_url="https://example.com/v1",
+        default_headers={"Authorization": "Bearer default-token", "x-safe": "ok"},
+        default_query={"api_key": "query-token", "safe": "ok"},
         name="test-provider",
     )
 
@@ -32,6 +35,7 @@ def _build_api_provider() -> APIProvider:
 def _build_model_info() -> ModelInfo:
     return ModelInfo(
         api_provider="test-provider",
+        extra_params={"headers": {"Authorization": "Bearer model-token"}, "safe": "ok"},
         model_identifier="demo-model",
         name="demo-model",
     )
@@ -55,7 +59,7 @@ def _build_response_request() -> ResponseRequest:
         .build(),
     ]
     return ResponseRequest(
-        extra_params={"trace_id": "trace-123"},
+        extra_params={"trace_id": "trace-123", "x-api-key": "request-token"},
         max_tokens=256,
         message_list=message_list,
         model_info=_build_model_info(),
@@ -112,15 +116,51 @@ def test_failed_request_snapshot_contains_replay_entry(tmp_path: Path, monkeypat
 
     assert payload["internal_request"]["request_kind"] == "response"
     assert payload["api_provider"]["name"] == "test-provider"
-    assert payload["replay"]["file_uri"] == snapshot_path.as_uri()
-    assert str(snapshot_path) in payload["replay"]["command"]
+    assert payload["api_provider"]["default_headers"]["Authorization"] == "<redacted>"
+    assert payload["api_provider"]["default_headers"]["x-safe"] == "ok"
+    assert payload["api_provider"]["default_query"]["api_key"] == "<redacted>"
+    assert payload["api_provider"]["default_query"]["safe"] == "ok"
+    assert payload["model_info"]["extra_params"]["headers"]["Authorization"] == "<redacted>"
+    assert payload["internal_request"]["extra_params"]["x-api-key"] == "<redacted>"
+    assert "file_uri" not in payload["replay"]
+    assert payload["replay"]["script_path"] == "scripts/replay_llm_request.py"
+    assert snapshot_path.name in payload["replay"]["command"]
+    assert str(snapshot_path) not in payload["replay"]["command"]
     assert "secret-token" not in snapshot_path.read_text(encoding="utf-8")
+    assert "default-token" not in snapshot_path.read_text(encoding="utf-8")
+    assert "query-token" not in snapshot_path.read_text(encoding="utf-8")
+    assert "model-token" not in snapshot_path.read_text(encoding="utf-8")
+    assert "request-token" not in snapshot_path.read_text(encoding="utf-8")
     request_kwargs = payload["provider_request"]["request_kwargs"]
     assert "extra_headers" not in request_kwargs
     assert "extra_query" not in request_kwargs
     assert request_kwargs["extra_body"]["safe"] == "ok"
     assert request_kwargs["extra_body"]["nested"]["token"] == "<redacted>"
     assert "provider-token" not in snapshot_path.read_text(encoding="utf-8")
+
+
+def test_response_replay_snapshot_uses_provider_operation_and_existing_serializers() -> None:
+    request = _build_response_request()
+    provider = APIProvider(
+        api_key="secret-token",
+        base_url="https://example.com/v1",
+        client_type="gemini",
+        default_headers={"Authorization": "Bearer default-token"},
+        name="test-provider",
+    )
+
+    snapshot = LLMOrchestrator._build_response_replay_snapshot(
+        api_provider=provider,
+        request=request,
+        provider_request={"operation": "models.generate_content"},
+    )
+
+    assert snapshot is not None
+    assert snapshot["operation"] == "models.generate_content"
+    assert snapshot["api_provider"]["default_headers"]["Authorization"] == "<redacted>"
+    assert snapshot["internal_request"]["request_kind"] == "response"
+    assert snapshot["internal_request"]["max_tokens"] == 256
+    assert snapshot["internal_request"]["extra_params"]["x-api-key"] == "<redacted>"
 
 
 def test_format_request_snapshot_log_info_includes_help_text_and_replay_command(
@@ -145,7 +185,8 @@ def test_format_request_snapshot_log_info_includes_help_text_and_replay_command(
 
     log_info = format_request_snapshot_log_info(exc)
     assert "调用完整信息（如果需要求助，请发送该文本）:" in log_info
-    assert str(snapshot_path) in log_info
+    assert snapshot_path.name in log_info
+    assert str(snapshot_path) not in log_info
     assert "请求快照链接" not in log_info
     assert snapshot_path.as_uri() not in log_info
     assert "使用以下命令重新请求: uv run python scripts/replay_llm_request.py" in log_info
