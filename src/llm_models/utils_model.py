@@ -48,13 +48,17 @@ from src.llm_models.model_client.base_client import (
 from src.llm_models.generation_diagnostics import sanitize_diagnostic_url
 from src.llm_models.image_normalizer import normalize_context_images
 from src.llm_models.request_snapshot import (
+    SNAPSHOT_VERSION,
     attach_request_snapshot,
     format_request_snapshot_log_info,
     has_request_snapshot,
     mark_request_final_failure,
     mark_request_succeeded,
     save_failed_request_snapshot,
+    serialize_api_provider_snapshot,
     serialize_client_request_snapshot,
+    serialize_model_info_snapshot,
+    serialize_response_request_snapshot,
     update_failed_request_attempt,
 )
 from src.llm_models.payload_content.context_item import ContextItem, ContextItemBuilder
@@ -101,6 +105,16 @@ class LLMExecutionResult:
     api_response: APIResponse
     model_info: ModelInfo
     request_started_at: datetime
+    api_provider: APIProvider | None = None
+    request: ClientRequest | None = None
+
+
+@dataclass(slots=True)
+class LLMAttemptResult:
+    """单个模型尝试的响应与实际请求。"""
+
+    api_response: APIResponse
+    request: ClientRequest
 
 
 class LLMOrchestrator:
@@ -303,6 +317,7 @@ class LLMOrchestrator:
         response: APIResponse,
         model_name: str,
         provider_request: Dict[str, Any] | None = None,
+        request_snapshot: Dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         """构建统一的文本响应结果。
 
@@ -327,7 +342,31 @@ class LLMOrchestrator:
             wire_protocol=response.wire_protocol,
             request_wire_payload=response.request_wire_payload,
             provider_request=provider_request,
+            request_snapshot=request_snapshot,
         )
+
+    @staticmethod
+    def _build_response_replay_snapshot(
+        *,
+        api_provider: APIProvider | None,
+        request: ClientRequest | None,
+        provider_request: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any] | None:
+        """构造可由 replay 脚本直接消费的响应请求快照。"""
+
+        if api_provider is None or not isinstance(request, ResponseRequest):
+            return None
+        operation = provider_request.get("operation") if isinstance(provider_request, dict) else None
+        if not isinstance(operation, str) or not operation:
+            operation = "models.generate_content" if api_provider.client_type == "gemini" else "chat.completions.create"
+        return {
+            "api_provider": serialize_api_provider_snapshot(api_provider),
+            "client_type": api_provider.client_type,
+            "internal_request": serialize_response_request_snapshot(request),
+            "model_info": serialize_model_info_snapshot(request.model_info),
+            "operation": operation,
+            "snapshot_version": SNAPSHOT_VERSION,
+        }
 
     @staticmethod
     def _extract_provider_request(response: APIResponse) -> Dict[str, Any] | None:
@@ -391,10 +430,16 @@ class LLMOrchestrator:
                 session_id=self._resolve_effective_session_id(session_id),
                 time_cost=time_cost,
             )
+        provider_request = self._extract_provider_request(response)
         return self._build_generation_result(
             response,
             model_info.name,
-            provider_request=self._extract_provider_request(response),
+            provider_request=provider_request,
+            request_snapshot=self._build_response_replay_snapshot(
+                api_provider=execution_result.api_provider,
+                request=execution_result.request,
+                provider_request=provider_request,
+            ),
         )
 
     async def generate_response_for_voice(
@@ -484,10 +529,16 @@ class LLMOrchestrator:
                 session_id=self._resolve_effective_session_id(session_id),
                 time_cost=time.time() - start_time,
             )
+        provider_request = self._extract_provider_request(response)
         return self._build_generation_result(
             response,
             model_info.name,
-            provider_request=self._extract_provider_request(response),
+            provider_request=provider_request,
+            request_snapshot=self._build_response_replay_snapshot(
+                api_provider=execution_result.api_provider,
+                request=execution_result.request,
+                provider_request=provider_request,
+            ),
         )
 
     async def generate_response_with_context_async(
@@ -551,10 +602,16 @@ class LLMOrchestrator:
                 session_id=self._resolve_effective_session_id(session_id),
                 time_cost=time_cost,
             )
+        provider_request = self._extract_provider_request(response)
         return self._build_generation_result(
             response,
             model_info.name,
-            provider_request=self._extract_provider_request(response),
+            provider_request=provider_request,
+            request_snapshot=self._build_response_replay_snapshot(
+                api_provider=execution_result.api_provider,
+                request=execution_result.request,
+                provider_request=provider_request,
+            ),
         )
 
     async def get_embedding(self, embedding_input: str, *, session_id: str = "") -> LLMEmbeddingResult:
@@ -1013,7 +1070,7 @@ class LLMOrchestrator:
         client: BaseClient,
         request: ClientRequest,
         retry_limit: Optional[int] = None,
-    ) -> APIResponse:
+    ) -> LLMAttemptResult:
         """在单个模型上执行请求，并处理重试逻辑。
 
         Args:
@@ -1023,7 +1080,7 @@ class LLMOrchestrator:
             retry_limit: 显式指定的重试次数；未指定时使用 Provider 配置。
 
         Returns:
-            APIResponse: 统一响应对象。
+            LLMAttemptResult: 统一响应对象与实际发出的请求。
 
         Raises:
             ModelAttemptFailed: 当当前模型重试耗尽或遇到硬错误时抛出。
@@ -1072,7 +1129,10 @@ class LLMOrchestrator:
                     response=response,
                 )
                 mark_request_succeeded(active_request, response)
-                return response
+                return LLMAttemptResult(
+                    api_response=response,
+                    request=active_request,
+                )
             except EmptyResponseException as e:
                 ensure_attempt_snapshot(e)
                 # 空回复：通常为临时问题，单独记录并重试
@@ -1262,7 +1322,7 @@ class LLMOrchestrator:
         client: BaseClient,
         request: ClientRequest,
         model_name: str,
-    ) -> APIResponse:
+    ) -> LLMAttemptResult:
         """对 `_attempt_request_on_model` 套一层任务级 hard_timeout。
 
         单次模型尝试超时时把 TimeoutError 转成 LLMTaskTimeoutError（继承 ModelAttemptFailed），
@@ -1388,12 +1448,13 @@ class LLMOrchestrator:
                         f"LLMOrchestrator[{self.request_type}] 正在向模型 model={model_info.name} 发送请求 "
                         f"(tool_options={len(tool_options or [])})"
                     )
-                response = await self._attempt_request_on_model_with_timeout(
+                attempt_result = await self._attempt_request_on_model_with_timeout(
                     api_provider,
                     client,
                     request,
                     model_info.name,
                 )
+                response = attempt_result.api_response
                 if self.request_type.startswith("maisaka."):
                     logger.debug(f"LLMOrchestrator[{self.request_type}] 模型 model={model_info.name} 已返回 API 响应")
                 response_tokens = response.usage.total_tokens if response.usage else 0
@@ -1402,6 +1463,8 @@ class LLMOrchestrator:
                     api_response=response,
                     model_info=model_info,
                     request_started_at=datetime.fromtimestamp(trace_context.current_attempt_started_at),
+                    api_provider=api_provider,
+                    request=attempt_result.request,
                 )
 
             except ReqAbortException as e:
