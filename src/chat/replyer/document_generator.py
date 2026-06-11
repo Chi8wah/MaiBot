@@ -34,9 +34,10 @@ class DocumentReplyGenerator(MaisakaReplyGenerator):
         reply_tool_args: Optional[Dict[str, Any]] = None,
         think_level: int = 1,
         prompt_profile: Optional[str] = None,
+        reference_info: str = "",
     ) -> List[ContextItem]:
         """写作不套用聊天/复古短回复模板，材料和最终输出要求独立传入。"""
-        del chat_history, reply_message, stream_id, enable_visual_message, think_level
+        del chat_history, reply_message, stream_id, enable_visual_message, think_level, reference_info
         reference = self._build_reply_reference_message(
             reply_reason, str((reply_tool_args or {}).get("reply_reference", "")),
         )

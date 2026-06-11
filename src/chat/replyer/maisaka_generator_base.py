@@ -521,8 +521,9 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
 
     def _build_reply_instruction(self) -> str:
         return (
-            "请自然地回复。不要输出多余说明、括号、@ 或额外标记，"
-            "只输出实际要发言的内容。"
+            "请优先依据【回复信息参考】中的回复指引和关键信息；只有缺少这些信息时，"
+            "才结合当前思考和聊天记录判断。请自然地回复。不要输出多余说明、括号、@ 或额外标记，"
+            "只输出实际要发送的内容。"
         )
 
     @staticmethod
@@ -539,6 +540,22 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
             return f"現在の考え：\n「{thought}」"
         return f"当前想法：\n“{thought}”"
 
+    @staticmethod
+    def _build_reply_reference_lines(reply_reason: str, reply_guide: str, reference_info: str) -> List[str]:
+        """构建 replyer 的信息参考块，优先使用显式指引和关键信息。"""
+
+        normalized_reply_guide = reply_guide.strip()
+        normalized_reference_info = reference_info.strip()
+        normalized_reply_reason = reply_reason.strip()
+        reference_lines: List[str] = []
+        if normalized_reply_guide:
+            reference_lines.append(f"回复指引：\n{normalized_reply_guide}")
+        if normalized_reference_info:
+            reference_lines.append(f"关键信息参考：\n{normalized_reference_info}")
+        if normalized_reply_reason:
+            reference_lines.append(f"当前思考：\n{normalized_reply_reason}")
+        return reference_lines
+
     def _build_final_user_message(
         self,
         chat_history: List[LLMContextMessage],
@@ -546,6 +563,10 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         reply_requirements: str = "",
         keywords_reaction_prompt: str = "",
         reply_tool_args: Optional[Dict[str, Any]] = None,
+        *,
+        reply_reason: str = "",
+        reply_guide: str = "",
+        reference_info: str = "",
     ) -> str:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sections: List[str] = [f"当前时间：{current_time}"]
@@ -557,6 +578,20 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         ).strip()
         if duplicate_target_reply_reminder:
             sections.append(duplicate_target_reply_reminder)
+        reply_reference_lines = self._build_reply_reference_lines(
+            reply_reason=reply_reason,
+            reply_guide="\n\n".join(
+                text
+                for text in (
+                    str((reply_tool_args or {}).get("reply_reference") or "").strip(),
+                    reply_guide.strip(),
+                )
+                if text
+            ),
+            reference_info=reference_info or str((reply_tool_args or {}).get("reference_info") or ""),
+        )
+        if reply_reference_lines:
+            sections.append("【回复信息参考】\n" + "\n\n".join(reply_reference_lines))
         if reply_requirements.strip():
             sections.append(reply_requirements.strip())
         if keywords_reaction_prompt.strip():
@@ -647,6 +682,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         reply_tool_args: Optional[Dict[str, Any]] = None,
         think_level: int = 1,
         prompt_profile: Optional[str] = None,
+        reference_info: str = "",
     ) -> List[ContextItem]:
         # 通用复古保留注意事项，Mai Replier 仅保留训练适配的人设。
         profile = prompt_profile or self._resolve_prompt_profile()
@@ -676,15 +712,14 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         final_user_message = self._build_final_user_message(
             chat_history=chat_history,
             reply_message=reply_message,
+            reply_reason=reply_reason,
+            reply_guide=str((reply_tool_args or {}).get("reply_guide") or ""),
+            reference_info=reference_info,
             reply_requirements=reply_requirements,
             keywords_reaction_prompt=keywords_reaction_prompt,
             reply_tool_args=reply_tool_args,
         )
         temporary_reply_style_message = self._build_temporary_reply_style_message(self._select_temporary_reply_style())
-        reply_reference_message = self._build_reply_reference_message(
-            reply_reason,
-            str((reply_tool_args or {}).get("reply_reference") or ""),
-        )
         requested_reply_style_message = self._build_requested_reply_style_message(
             str((reply_tool_args or {}).get("reply_style") or "")
         )
@@ -699,8 +734,6 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
             items.append(
                 ContextItemBuilder().set_role(RoleType.User).add_text_content(temporary_reply_style_message).build()
             )
-        if reply_reference_message:
-            items.append(ContextItemBuilder().set_role(RoleType.User).add_text_content(reply_reference_message).build())
         items.append(ContextItemBuilder().set_role(RoleType.User).add_text_content(final_user_message).build())
         if requested_reply_style_message:
             items.append(
@@ -725,6 +758,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         retry_count: int,
         reply_message: Optional[SessionMessage],
         reply_reason: str,
+        reference_info: str,
         selected_expression_ids: List[int],
         reply_tool_args: Dict[str, Any],
         prompt_profile: Optional[str] = None,
@@ -747,6 +781,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                 max_retries=REPLYER_MAX_HOOK_RETRIES,
                 reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                 reply_reason=reply_reason or "",
+                reference_info=reference_info or "",
                 selected_expression_ids=list(selected_expression_ids),
                 reply_tool_args={**reply_tool_args, "_replyer_prompt_profile": prompt_profile or self._resolve_prompt_profile(model_info)},
             )
@@ -1080,6 +1115,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         retro_history_builder: Optional[Callable[[], Awaitable[List[LLMContextMessage]]]] = None,
         planner_snapshot: Optional[PlannerRequestSnapshot] = None,
         tool_call_id: str = "",
+        reference_info: str = "",
     ) -> Tuple[bool, ReplyGenerationResult]:
         async def finalize(success_value: bool) -> Tuple[bool, ReplyGenerationResult]:
             if not result.prompt_html_uri and global_config.debug.save_maisaka_reasoning:
@@ -1183,6 +1219,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                 )
@@ -1281,6 +1318,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     chat_history=attempt_history,
                     reply_message=reply_message,
                     reply_reason="" if cache_snapshot is not None else reply_reason or "",
+                    reference_info=reference_info or "",
                     expression_habits=attempt_expression_habits,
                     reply_requirements=reply_requirements_for_attempt,
                     stream_id=stream_id,
@@ -1299,6 +1337,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     retry_count=retry_count_for_attempt,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(reply_tool_args_for_attempt),
                     prompt_profile=active_prompt_profile,
@@ -1464,6 +1503,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                     retry_count=retry_count,
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                     prompt_tokens=generation_result.prompt_tokens,
