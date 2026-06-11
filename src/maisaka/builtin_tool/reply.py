@@ -10,15 +10,17 @@ from src.common.logger import get_logger
 from src.config import config as config_module
 from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
 from src.maisaka.context.message_adapter import build_visible_text_from_sequence, parse_speaker_content
-from src.maisaka.context.messages import LLMContextMessage, SessionBackedMessage
+from src.maisaka.context.messages import LLMContextMessage, SessionBackedMessage, ToolResultMessage
 from src.maisaka.context.planner_messages import extract_quote_ids_from_message_sequence
 from src.services import send_service
 
 from .context import BuiltinToolRuntimeContext
 
 logger = get_logger("maisaka_builtin_reply")
-_REPLY_TOOL_INTERNAL_ARGUMENTS = {"msg_id", "set_quote"}
+_REPLY_TOOL_INTERNAL_ARGUMENTS = {"msg_id", "set_quote", "reference_info"}
 _RICH_REPLY_ARGUMENTS = {"attach_pic", "attach_emoji", "attach_at"}
+_REPLYER_MEMORY_REFERENCE_METADATA_KEY = "replyer_memory_reference"
+_REFERENCE_INFO_EMPTY_TEXT = "无"
 _DUPLICATE_TARGET_REPLY_REMINDER_ARG = "_duplicate_target_reply_reminder"
 _DUPLICATE_TARGET_REPLY_REMINDER_TEMPLATE = (
     "你刚刚已经回复过这条消息，你刚刚的发言是：“{previous_reply}”\n"
@@ -93,11 +95,17 @@ def get_tool_spec() -> ToolSpec:
             "description": "以引用回复的方式发送这条回复，当发言人数过多，聊天比较乱时使用。",
             "default": True,
         },
-        "reply_reference": {
+        "reply_guide": {
+            "type": "string",
+            "description": "回复需要注意的事项和回复指引，包含当前聊天状态，情感态度等等。",
+        },
+        "reference_info": {
             "type": "string",
             "description": (
-                "有助于回复的信息，包括当前聊天状态、人物关系、事实信息、回忆信息。"
+                "上下文中的关键信息，包括人物关系，情感关系，事实信息，回忆信息，聊天情况。"
+                "这些信息将为回复提供信息参考；如果没有可参考的信息，请填写“无”。"
             ),
+            "default": "无",
         },
         "reply_style": {
             "type": "string",
@@ -188,7 +196,7 @@ def get_tool_spec() -> ToolSpec:
         parameters_schema={
             "type": "object",
             "properties": properties,
-            "required": ["msg_id"],
+            "required": ["msg_id", "reference_info"],
         },
         provider_name="maisaka_builtin",
         provider_type="builtin",
@@ -202,6 +210,37 @@ def _build_monitor_metadata(reply_result: ReplyGenerationResult) -> dict[str, ob
     if isinstance(monitor_detail, dict):
         return {"monitor_detail": monitor_detail}
     return {}
+
+
+def _build_reference_info(base_reference_info: str, chat_history: list[Any], target_message_id: str) -> str:
+    """合并 planner 显式参考信息与工具结果中给 replyer 的内部参考。"""
+
+    base_reference = base_reference_info.strip()
+    reference_parts: list[str] = []
+    if base_reference and base_reference != _REFERENCE_INFO_EMPTY_TEXT:
+        reference_parts.append(base_reference)
+
+    target_index = -1
+    for index, message in enumerate(chat_history):
+        if str(getattr(message, "message_id", "") or "") == target_message_id:
+            target_index = index
+
+    seen_references = set(reference_parts)
+    scoped_history = chat_history[target_index + 1 :] if target_index >= 0 else []
+    for message in scoped_history:
+        if not isinstance(message, ToolResultMessage):
+            continue
+        if message.tool_name != "query_memory" or not message.success:
+            continue
+        replyer_reference = str(message.metadata.get(_REPLYER_MEMORY_REFERENCE_METADATA_KEY) or "").strip()
+        if not replyer_reference or replyer_reference in seen_references:
+            continue
+        reference_parts.append(replyer_reference)
+        seen_references.add(replyer_reference)
+
+    if reference_parts:
+        return "\n\n".join(reference_parts)
+    return base_reference
 
 
 def _build_send_result(
@@ -301,6 +340,7 @@ async def handle_tool(
 
     invocation_arguments = dict(invocation.arguments or {})
     latest_thought = context.reasoning if context is not None else invocation.reasoning
+    raw_reference_info = str(invocation_arguments.get("reference_info") or "").strip()
     target_message_id = str(invocation_arguments.get("msg_id") or "").strip()
     set_quote = bool(invocation_arguments.get("set_quote", True))
     rich_reply_enabled = bool(config_module.global_config.experimental.enable_rich_reply)
@@ -355,10 +395,12 @@ async def handle_tool(
     previous_target_reply = _find_recent_reply_to_target(replyer_chat_history, target_message_id)
     if previous_target_reply:
         reply_tool_args = _with_duplicate_target_reply_reminder(reply_tool_args, previous_target_reply)
+    reference_info = _build_reference_info(raw_reference_info, replyer_chat_history, target_message_id)
     try:
         tool_ctx.runtime._update_stage_status("Replyer", "生成可见回复")
         success, reply_result = await replyer.generate_reply_with_context(
             reply_reason=latest_thought,
+            reference_info=reference_info,
             stream_id=tool_ctx.runtime.session_id,
             reply_message=target_message,
             chat_history=replyer_chat_history,
