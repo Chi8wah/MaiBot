@@ -335,6 +335,10 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                             "type": "string",
                             "description": "本次 replyer 生成的回复理由。",
                         },
+                        "reference_info": {
+                            "type": "string",
+                            "description": "本次 replyer 可参考的事实性信息、检索结果或上下文补充。",
+                        },
                         "selected_expression_ids": {
                             "type": "array",
                             "description": "本次 replyer 选中的表达方式编号列表。",
@@ -355,6 +359,7 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                         "max_retries",
                         "reply_message_id",
                         "reply_reason",
+                        "reference_info",
                         "selected_expression_ids",
                         "reply_tool_args",
                     ],
@@ -420,6 +425,10 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                             "type": "string",
                             "description": "本次 replyer 生成的回复理由。",
                         },
+                        "reference_info": {
+                            "type": "string",
+                            "description": "本次 replyer 可参考的事实性信息、检索结果或上下文补充。",
+                        },
                         "selected_expression_ids": {
                             "type": "array",
                             "description": "本次 replyer 选中的表达方式编号列表。",
@@ -443,6 +452,7 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                         "max_retries",
                         "reply_message_id",
                         "reply_reason",
+                        "reference_info",
                         "selected_expression_ids",
                         "reply_tool_args",
                     ],
@@ -500,6 +510,10 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                             "type": "string",
                             "description": "被回复消息 ID；无目标消息时为空字符串。",
                         },
+                        "reference_info": {
+                            "type": "string",
+                            "description": "本次 replyer 可参考的事实性信息、检索结果或上下文补充。",
+                        },
                         "selected_expression_ids": {
                             "type": "array",
                             "description": "本次 replyer 选中的表达方式编号列表。",
@@ -553,6 +567,7 @@ def register_maisaka_hook_specs(registry: HookSpecRegistry) -> List[HookSpec]:
                         "retry_count",
                         "max_retries",
                         "reply_message_id",
+                        "reference_info",
                         "selected_expression_ids",
                         "reply_tool_args",
                         "prompt_tokens",
