@@ -412,6 +412,7 @@ class BaseMaisakaReplyGenerator:
         self,
         reply_message: Optional[SessionMessage],
         reply_reason: str,
+        reference_info: str = "",
         reply_requirements: str = "",
         keywords_reaction_prompt: str = "",
     ) -> str:
@@ -423,6 +424,8 @@ class BaseMaisakaReplyGenerator:
         reply_reference_lines: List[str] = []
         if reply_reason.strip():
             reply_reference_lines.append(f"【最新推理】\n{reply_reason.strip()}")
+        if reference_info.strip():
+            reply_reference_lines.append(f"【参考信息】\n{reference_info.strip()}")
         if reply_reference_lines:
             sections.append("【回复信息参考】\n" + "\n\n".join(reply_reference_lines))
         if reply_requirements.strip():
@@ -480,6 +483,7 @@ class BaseMaisakaReplyGenerator:
         chat_history: List[LLMContextMessage],
         reply_message: Optional[SessionMessage],
         reply_reason: str,
+        reference_info: str = "",
         expression_habits: str = "",
         reply_requirements: str = "",
         stream_id: Optional[str] = None,
@@ -500,6 +504,7 @@ class BaseMaisakaReplyGenerator:
         final_user_message = self._build_final_user_message(
             reply_message=reply_message,
             reply_reason=reply_reason,
+            reference_info=reference_info,
             reply_requirements=reply_requirements,
             keywords_reaction_prompt=keywords_reaction_prompt,
         )
@@ -535,6 +540,7 @@ class BaseMaisakaReplyGenerator:
         retry_count: int,
         reply_message: Optional[SessionMessage],
         reply_reason: str,
+        reference_info: str,
         selected_expression_ids: List[int],
         reply_tool_args: Dict[str, Any],
     ) -> List[Message]:
@@ -555,6 +561,7 @@ class BaseMaisakaReplyGenerator:
                 max_retries=REPLYER_MAX_HOOK_RETRIES,
                 reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                 reply_reason=reply_reason or "",
+                reference_info=reference_info or "",
                 selected_expression_ids=list(selected_expression_ids),
                 reply_tool_args=dict(reply_tool_args),
             )
@@ -707,6 +714,7 @@ class BaseMaisakaReplyGenerator:
         selected_expressions: Optional[List[Dict[str, Any]]] = None,
         sub_agent_runner: Optional[Callable[[str], Awaitable[str]]] = None,
         reply_tool_args: Optional[Dict[str, Any]] = None,
+        reference_info: str = "",
     ) -> Tuple[bool, ReplyGenerationResult]:
         def finalize(success_value: bool) -> Tuple[bool, ReplyGenerationResult]:
             result.monitor_detail = build_reply_monitor_detail(result)
@@ -798,6 +806,7 @@ class BaseMaisakaReplyGenerator:
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                 )
@@ -823,6 +832,7 @@ class BaseMaisakaReplyGenerator:
                     chat_history=filtered_history,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     expression_habits=merged_expression_habits,
                     reply_requirements=active_reply_requirements,
                     stream_id=stream_id,
@@ -857,6 +867,7 @@ class BaseMaisakaReplyGenerator:
                     chat_history=filtered_history,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     expression_habits=merged_expression_habits,
                     reply_requirements=reply_requirements_for_attempt,
                     stream_id=stream_id,
@@ -873,6 +884,7 @@ class BaseMaisakaReplyGenerator:
                     retry_count=retry_count_for_attempt,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(selected_expression_ids_for_attempt),
                     reply_tool_args=dict(reply_tool_args_for_attempt),
                 )
@@ -928,6 +940,7 @@ class BaseMaisakaReplyGenerator:
                     retry_count=retry_count,
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                     prompt_tokens=generation_result.prompt_tokens,
