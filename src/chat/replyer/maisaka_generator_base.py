@@ -425,10 +425,21 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
         reply_tool_args: Optional[Dict[str, Any]] = None,
         think_level: int = 1,
         prompt_profile: Optional[str] = None,
+        reference_info: str = "",
     ) -> List[ContextItem]:
         profile = prompt_profile or self._resolve_prompt_profile()
         if profile not in {"reply", "mai_replier"}:
             raise ValueError(f"不支持的聊天回复模板模式：{profile}")
+        args = reply_tool_args or {}
+        reply_guide = str(args.get("reply_guide") or "").strip()
+        reference = reference_info.strip() or str(args.get("reference_info") or "").strip()
+        reference_blocks: List[str] = []
+        if reply_guide:
+            reference_blocks.append(f"回复指引：\n{reply_guide}")
+        if reference and reference != "无":
+            reference_blocks.append(f"关键信息参考：\n{reference}")
+        if reference_blocks:
+            reply_requirements = "\n\n".join(block for block in (*reference_blocks, reply_requirements.strip()) if block)
         return self._build_reply_request_messages(
             mai_replier=profile == "mai_replier",
             chat_history=chat_history,
@@ -454,6 +465,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
         retry_count: int,
         reply_message: Optional[SessionMessage],
         reply_reason: str,
+        reference_info: str,
         selected_expression_ids: List[int],
         reply_tool_args: Dict[str, Any],
         prompt_profile: Optional[str] = None,
@@ -476,6 +488,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
                 max_retries=REPLYER_MAX_HOOK_RETRIES,
                 reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                 reply_reason=reply_reason or "",
+                reference_info=reference_info or "",
                 selected_expression_ids=list(selected_expression_ids),
                 reply_tool_args={**reply_tool_args, "_replyer_prompt_profile": prompt_profile or self._resolve_prompt_profile(model_info)},
             )
@@ -809,6 +822,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
         image_recognition_refresher: Optional[Callable[[List[LLMContextMessage]], Awaitable[int]]] = None,
         reply_history_builder: Optional[Callable[[], Awaitable[List[LLMContextMessage]]]] = None,
         tool_call_id: str = "",
+        reference_info: str = "",
     ) -> Tuple[bool, ReplyGenerationResult]:
         async def finalize(success_value: bool) -> Tuple[bool, ReplyGenerationResult]:
             if not result.prompt_html_uri and global_config.debug.save_maisaka_reasoning:
@@ -904,6 +918,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                 )
@@ -995,6 +1010,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
                     chat_history=attempt_history,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     expression_habits=attempt_expression_habits,
                     reply_requirements=reply_requirements_for_attempt,
                     stream_id=stream_id,
@@ -1013,6 +1029,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
                     retry_count=retry_count_for_attempt,
                     reply_message=reply_message,
                     reply_reason=reply_reason or "",
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(reply_tool_args_for_attempt),
                     prompt_profile=active_prompt_profile,
@@ -1161,6 +1178,7 @@ class BaseMaisakaReplyGenerator(ChatReplyPromptMixin):
                     retry_count=retry_count,
                     max_retries=REPLYER_MAX_HOOK_RETRIES,
                     reply_message_id=str(reply_message.message_id if reply_message is not None else ""),
+                    reference_info=reference_info or "",
                     selected_expression_ids=list(result.selected_expression_ids),
                     reply_tool_args=dict(active_reply_tool_args),
                     prompt_tokens=generation_result.prompt_tokens,

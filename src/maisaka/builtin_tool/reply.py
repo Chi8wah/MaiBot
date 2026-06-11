@@ -25,7 +25,7 @@ from src.core.tooling import (
 )
 from src.maisaka.context.message_adapter import build_visible_text_from_sequence, parse_speaker_content
 from src.maisaka.context.message_id_alias import to_display_message_id
-from src.maisaka.context.messages import InternalContextMessage, LLMContextMessage, SessionBackedMessage
+from src.maisaka.context.messages import ContentContextMessage, InternalContextMessage, LLMContextMessage, SessionBackedMessage, ToolResultMessage
 from src.maisaka.context.planner_messages import extract_quote_ids_from_message_sequence
 from src.maisaka.quote import decide_quote
 from src.maisaka.scenes.factory import get_scene
@@ -44,7 +44,11 @@ if TYPE_CHECKING:
     from src.maisaka.reply_supplement import ReplySupplement
 
 logger = get_logger("maisaka_builtin_reply")
-_REPLY_TOOL_INTERNAL_ARGUMENTS = {"msg_id", "_reply_id", "_plugin_reply_prompt", "after_reply", "wait_seconds"}
+_REPLY_TOOL_INTERNAL_ARGUMENTS = {
+    "msg_id", "reference_info", "_reply_id", "_plugin_reply_prompt", "after_reply", "wait_seconds",
+}
+_REPLYER_MEMORY_REFERENCE_METADATA_KEY = "replyer_memory_reference"
+_REFERENCE_INFO_EMPTY_TEXT = "无"
 _DUPLICATE_TARGET_REPLY_REMINDER_ARG = "_duplicate_target_reply_reminder"
 _DUPLICATE_TARGET_REPLY_REMINDER_TEMPLATE = (
     "你刚刚已经回复过这条消息，你刚刚的发言是：“{previous_reply}”\n"
@@ -161,6 +165,18 @@ def get_tool_spec(context: Optional[ToolAvailabilityContext] = None) -> ToolSpec
                 "提炼通过搜索或工具查证到的关键事实结论，不写入长段原文时间戳或者具体的消息ID。"
                 "不要原文引用，不评价回复价值、不写回复原因、不构想或指导如何回复。"
             ),
+        },
+        "reply_guide": {
+            "type": "string",
+            "description": "回复需要注意的事项和回复指引，包含当前聊天状态，情感态度等等。",
+        },
+        "reference_info": {
+            "type": "string",
+            "description": (
+                "上下文中的关键信息，包括人物关系，情感关系，事实信息，回忆信息，聊天情况。"
+                "这些信息将为回复提供信息参考；如果没有可参考的信息，请填写“无”。"
+            ),
+            "default": "无",
         },
         "reply_style": {
             "type": "string",
@@ -317,6 +333,37 @@ def _build_reply_failure(
         return build_hook_abort_tool_result("reply", hook_abort, structured_content=content, metadata=metadata)
     content["message"] = reason
     return tool_ctx.build_failure_result("reply", reason, structured_content=content, metadata=metadata)
+
+
+def _build_reference_info(base_reference_info: str, chat_history: List[LLMContextMessage], target_message_id: str) -> str:
+    """合并 planner 显式参考信息与工具结果中给 replyer 的内部参考。"""
+
+    base_reference = base_reference_info.strip()
+    reference_parts: list[str] = []
+    if base_reference and base_reference != _REFERENCE_INFO_EMPTY_TEXT:
+        reference_parts.append(base_reference)
+
+    target_index = -1
+    for index, message in enumerate(chat_history):
+        if isinstance(message, ContentContextMessage) and message.message_id == target_message_id:
+            target_index = index
+
+    seen_references = set(reference_parts)
+    scoped_history = chat_history[target_index + 1 :] if target_index >= 0 else []
+    for message in scoped_history:
+        if not isinstance(message, ToolResultMessage):
+            continue
+        if message.tool_name != "query_memory" or not message.success:
+            continue
+        replyer_reference = str(message.metadata.get(_REPLYER_MEMORY_REFERENCE_METADATA_KEY) or "").strip()
+        if not replyer_reference or replyer_reference in seen_references:
+            continue
+        reference_parts.append(replyer_reference)
+        seen_references.add(replyer_reference)
+
+    if reference_parts:
+        return "\n\n".join(reference_parts)
+    return base_reference
 
 
 def _build_send_result(
@@ -535,6 +582,7 @@ async def _execute_reply(
             "reply 工具必须提供非空字符串 `chat_anlyze`，请精炼转述当前对话局面与查证到的关键事实后重新调用。",
         )
     invocation_arguments["chat_anlyze"] = chat_anlyze.strip()
+    raw_reference_info = str(invocation_arguments.get("reference_info") or "").strip()
     target_message_id = str(invocation_arguments.get("msg_id") or "").strip()
     if invocation_arguments.get("attach_at") and not config_module.global_config.chat.enable_reply_at:
         return tool_ctx.build_failure_result("reply", "回复时 @ 用户已关闭，不能使用 attach_at。")
@@ -642,6 +690,7 @@ async def _execute_reply(
     )
     if previous_target_reply:
         reply_tool_args = _with_duplicate_target_reply_reminder(reply_tool_args, previous_target_reply)
+    reference_info = _build_reference_info(raw_reference_info, replyer_chat_history, target_message_id)
     try:
         tool_ctx.runtime._update_stage_status("Replyer", "生成可见回复")
         if supplement_runner is None:
@@ -655,6 +704,7 @@ async def _execute_reply(
             resolved_attachments = start_attachment_resolution(invocation_arguments)
         generation = replyer.generate_reply_with_context(
             reply_reason="",
+            reference_info=reference_info,
             tool_call_id=call_id,
             stream_id=tool_ctx.runtime.session_id,
             reply_message=target_message if supplement_runner is None else None,
