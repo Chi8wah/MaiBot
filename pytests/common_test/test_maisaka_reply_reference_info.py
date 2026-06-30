@@ -164,6 +164,42 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
     assert after_call[1]["reply_tool_args"] == {"route": "fast", "hook_added": "yes"}
 
 
+def test_replyer_uses_reply_guide_when_reply_reason_empty() -> None:
+    generator = replyer_module.MaisakaReplyGenerator(
+        chat_stream=None,
+        request_type="test_reply_guide",
+        enable_visual_message=False,
+    )
+
+    final_user_message = generator._build_final_user_message(
+        reply_message=None,
+        reply_reason="",
+        reference_info="测试参考",
+        reply_tool_args={"reply_guide": "只回应日期纠正，不要展开。"},
+    )
+
+    assert "【回复指引(仅供参考)】\n只回应日期纠正，不要展开。" in final_user_message
+    assert "【参考信息】\n测试参考" in final_user_message
+
+
+def test_replyer_ignores_reply_guide_when_reply_reason_present() -> None:
+    generator = replyer_module.MaisakaReplyGenerator(
+        chat_stream=None,
+        request_type="test_reply_guide",
+        enable_visual_message=False,
+    )
+
+    final_user_message = generator._build_final_user_message(
+        reply_message=None,
+        reply_reason="已有 planner 推理",
+        reply_tool_args={"reply_guide": "这段不应进入主 replyer prompt"},
+    )
+
+    assert "【最新推理】\n已有 planner 推理" in final_user_message
+    assert "回复指引" not in final_user_message
+    assert "这段不应进入主 replyer prompt" not in final_user_message
+
+
 @pytest.mark.asyncio
 async def test_reply_tool_passes_reference_info_to_replyer(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}

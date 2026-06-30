@@ -415,6 +415,7 @@ class BaseMaisakaReplyGenerator:
         reference_info: str = "",
         reply_requirements: str = "",
         keywords_reaction_prompt: str = "",
+        reply_tool_args: Optional[Dict[str, Any]] = None,
     ) -> str:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sections: List[str] = [f"当前时间：{current_time}"]
@@ -422,8 +423,13 @@ class BaseMaisakaReplyGenerator:
         if target_message_block:
             sections.append(target_message_block)
         reply_reference_lines: List[str] = []
-        if reply_reason.strip():
-            reply_reference_lines.append(f"【最新推理】\n{reply_reason.strip()}")
+        normalized_reply_reason = reply_reason.strip()
+        if normalized_reply_reason:
+            reply_reference_lines.append(f"【最新推理】\n{normalized_reply_reason}")
+        elif isinstance(reply_tool_args, dict):
+            reply_guide = str(reply_tool_args.get("reply_guide") or "").strip()
+            if reply_guide:
+                reply_reference_lines.append(f"【回复指引(仅供参考)】\n{reply_guide}")
         if reference_info.strip():
             reply_reference_lines.append(f"【参考信息】\n{reference_info.strip()}")
         if reply_reference_lines:
@@ -507,6 +513,7 @@ class BaseMaisakaReplyGenerator:
             reference_info=reference_info,
             reply_requirements=reply_requirements,
             keywords_reaction_prompt=keywords_reaction_prompt,
+            reply_tool_args=reply_tool_args,
         )
         temporary_reply_style_message = self._build_temporary_reply_style_message(self._select_temporary_reply_style())
 
