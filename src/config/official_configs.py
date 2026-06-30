@@ -4534,6 +4534,34 @@ class DebugConfig(ConfigBase):
     )
     """记录回复效果评分，方便观察回复质量。"""
 
+    record_reply_request: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "记录 Replyer 请求",
+                "en_US": "Record Replyer request",
+                "ja_JP": "Replyer リクエスト記録",
+            },
+            "x-widget": "switch",
+            "x-icon": "file-json",
+        },
+    )
+    """保存 Replyer 的请求内容，方便排查回复问题。"""
+
+    record_planner_request: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "记录 Planner 请求",
+                "en_US": "Record Planner request",
+                "ja_JP": "Planner リクエスト記録",
+            },
+            "x-widget": "switch",
+            "x-icon": "file-json",
+        },
+    )
+    """保存 Planner 的完整请求和回复，日志体积会变大。"""
+
     keep_prompt_preview_json_base64: bool = Field(
         default=False,
         json_schema_extra={
