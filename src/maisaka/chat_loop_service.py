@@ -41,6 +41,7 @@ from src.llm_models.request_snapshot import REPLAY_SCRIPT_RELATIVE_PATH
 from src.plugin_runtime.hook_payloads import (
     deserialize_prompt_items,
     serialize_prompt_items,
+    serialize_tool_calls,
     serialize_tool_definitions,
 )
 from src.plugin_runtime.hook_schema_utils import build_object_schema
