@@ -1269,6 +1269,17 @@ class MaisakaChatLoopService:
             generation_result.completion_tokens,
         )
         total_tokens = self._coerce_int(after_response_kwargs.get("total_tokens"), generation_result.total_tokens)
+        final_response = get_response_text(final_output_items)
+        final_reasoning = get_response_reasoning(final_output_items)
+        final_tool_calls = [
+            ToolCall(
+                call_id=tool_call.call_id,
+                func_name=tool_call.func_name,
+                args=tool_call.materialize_args(),
+                extra_content=tool_call.materialize_extra_content(),
+            )
+            for tool_call in get_response_tool_calls(final_output_items)
+        ]
         self._save_debug_planner_request_body(
             request_kind=request_kind,
             model_name=generation_result.model_name or "",
@@ -1290,7 +1301,7 @@ class MaisakaChatLoopService:
             ),
             final_response_body=self._serialize_llm_response_body(
                 response=final_response,
-                reasoning=generation_result.reasoning or "",
+                reasoning=final_reasoning,
                 model_name=generation_result.model_name or "",
                 tool_calls=final_tool_calls,
                 prompt_tokens=prompt_tokens,
