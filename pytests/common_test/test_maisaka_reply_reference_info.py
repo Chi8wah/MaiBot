@@ -10,7 +10,9 @@ from src.chat.replyer import maisaka_generator as replyer_module
 from src.common.data_models.llm_service_data_models import LLMResponseResult
 from src.common.data_models.message_component_data_model import MessageSequence, TextComponent
 from src.common.data_models.reply_generation_data_models import GenerationMetrics, LLMCompletionResult, ReplyGenerationResult
+from src.common.i18n import use_locale
 from src.core.tooling import ToolInvocation
+from src.llm_models.payload_content.context_item import ContextTextPart
 from src.maisaka.builtin_tool import reply as reply_tool_module
 from src.maisaka.builtin_tool.context import BuiltinToolRuntimeContext
 from src.maisaka.chat_loop_service import register_maisaka_hook_specs
@@ -96,7 +98,7 @@ def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
         _chat_history=chat_history,
         _clear_force_continue_until_reply=lambda: None,
         _is_focus_mode_active_for_current_chat=lambda: False,
-        _record_reply_sent=lambda: None,
+        record_planner_reply=lambda: None,
         _update_stage_status=lambda stage, status: None,
         run_sub_agent=None,
     )
@@ -143,7 +145,6 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
     generator = replyer_module.MaisakaReplyGenerator(
         chat_stream=None,
         request_type="test_reply_reference_info",
-        enable_visual_message=False,
     )
     monkeypatch.setattr(generator, "_get_runtime_manager", lambda: fake_hook_manager)
 
@@ -275,19 +276,26 @@ async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.M
     assert "reference_info" not in captured["reply_tool_args"]
 
 
-def test_replyer_prompt_keeps_reason_and_reference_info() -> None:
+@pytest.mark.parametrize("prompt_profile", ["reply", "mai_replier"])
+def test_replyer_prompt_keeps_guide_and_reference_info(prompt_profile: str) -> None:
     generator = replyer_module.MaisakaReplyGenerator(
         chat_stream=None,
         request_type="test_reference_info_prompt",
-        enable_visual_message=False,
     )
+    reply_tool_args = {"reply_guide": "测试指引", "chat_anlyze": "测试对话分析"}
 
-    final_user_message = generator._build_final_user_message(
-        chat_history=[],
-        reply_message=None,
-        reply_reason="测试推理",
-        reference_info="测试参考",
-    )
+    with use_locale("zh-CN"):
+        items = generator._build_request_messages(
+            chat_history=[],
+            reply_message=None,
+            reply_reason="测试推理",
+            reference_info="测试参考",
+            reply_tool_args=reply_tool_args,
+            prompt_profile=prompt_profile,
+        )
 
-    assert "当前思考：\n测试推理" in final_user_message
-    assert "关键信息参考：\n测试参考" in final_user_message
+    text = "\n".join(part.text for part in items[-1].parts if isinstance(part, ContextTextPart))
+    assert "回复指引：\n测试指引" in text
+    assert "关键信息参考：\n测试参考" in text
+    assert "测试对话分析" in text
+    assert reply_tool_args == {"reply_guide": "测试指引", "chat_anlyze": "测试对话分析"}
