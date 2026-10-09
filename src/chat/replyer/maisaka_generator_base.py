@@ -687,6 +687,17 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         # 通用复古保留注意事项，Mai Replier 仅保留训练适配的人设。
         profile = prompt_profile or self._resolve_prompt_profile()
         if profile in {"retro", "mai_replier"}:
+            retro_tool_args = dict(reply_tool_args or {})
+            # 复古模板使用 reply_reference 块承载参考，同时保留额外指引和记忆参考。
+            legacy_reference = str(retro_tool_args.get("reply_reference") or "").strip()
+            reference_lines = self._build_reply_reference_lines(
+                reply_reason="" if legacy_reference else reply_reason,
+                reply_guide=str(retro_tool_args.get("reply_guide") or ""),
+                reference_info=reference_info or str(retro_tool_args.get("reference_info") or ""),
+            )
+            retro_tool_args["reply_reference"] = "\n\n".join(
+                text for text in (legacy_reference, *reference_lines) if text
+            )
             return self._build_retro_request_messages(
                 mai_replier=profile == "mai_replier",
                 chat_history=chat_history,
@@ -696,7 +707,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                 reply_requirements=reply_requirements,
                 stream_id=stream_id,
                 think_level=think_level,
-                reply_tool_args=reply_tool_args,
+                reply_tool_args=retro_tool_args,
                 enable_visual_message=enable_visual_message,
             )
 
