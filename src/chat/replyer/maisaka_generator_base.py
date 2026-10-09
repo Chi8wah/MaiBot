@@ -565,6 +565,15 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
         )
 
     @staticmethod
+    def _build_reply_reference_message(reply_reason: str, reply_reference: str) -> str:
+        """有旧版 reply_reference 时优先使用参考，否则使用 Planner 正文。"""
+
+        normalized_reference = reply_reference.strip()
+        if normalized_reference:
+            return normalized_reference
+        return reply_reason.strip()
+
+    @staticmethod
     def _build_reply_reference_lines(reply_reason: str, reply_guide: str, reference_info: str) -> List[str]:
         """构建 replyer 的信息参考块，优先使用显式指引和关键信息。"""
 
@@ -709,6 +718,17 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
     ) -> List[ContextItem]:
         # 复古模式将人设与注意事项放在首条 system 消息，其余模板作为一条 user 消息发送
         if self._uses_retro_prompt():
+            retro_tool_args = dict(reply_tool_args or {})
+            # 复古模板使用 reply_reference 块承载参考，同时保留额外指引和记忆参考。
+            legacy_reference = str(retro_tool_args.get("reply_reference") or "").strip()
+            reference_lines = self._build_reply_reference_lines(
+                reply_reason="" if legacy_reference else reply_reason,
+                reply_guide=str(retro_tool_args.get("reply_guide") or ""),
+                reference_info=reference_info or str(retro_tool_args.get("reference_info") or ""),
+            )
+            retro_tool_args["reply_reference"] = "\n\n".join(
+                text for text in (legacy_reference, *reference_lines) if text
+            )
             return self._build_retro_request_messages(
                 chat_history=chat_history,
                 reply_message=reply_message,
@@ -717,7 +737,7 @@ class BaseMaisakaReplyGenerator(RetroReplyPromptMixin):
                 reply_requirements=reply_requirements,
                 stream_id=stream_id,
                 think_level=think_level,
-                reply_tool_args=reply_tool_args,
+                reply_tool_args=retro_tool_args,
                 enable_visual_message=enable_visual_message,
             )
 
