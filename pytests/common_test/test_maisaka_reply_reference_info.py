@@ -17,9 +17,12 @@ from src.maisaka.builtin_tool import reply as reply_tool_module
 from src.maisaka.builtin_tool.context import BuiltinToolRuntimeContext
 from src.maisaka.chat_loop_service import register_maisaka_hook_specs
 from src.maisaka.context.messages import SessionBackedMessage, ToolResultMessage
+from src.maisaka.scenes.factory import get_scene
+from src.plugin_runtime.host.hook_dispatcher import HookDispatchResult
 from src.plugin_runtime.host.hook_spec_registry import HookSpecRegistry
 
 if TYPE_CHECKING:
+    from src.chat.message_receive.message import SessionMessage
     from src.maisaka.reasoning_engine import MaisakaReasoningEngine
     from src.maisaka.runtime import MaisakaHeartFlowChatting
 
@@ -58,15 +61,13 @@ class _FakeReplyerHookManager:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def invoke_hook(self, hook_name: str, **kwargs: Any) -> SimpleNamespace:
+    async def invoke_hook(self, hook_name: str, **kwargs: Any) -> HookDispatchResult:
         self.calls.append((hook_name, dict(kwargs)))
         if hook_name == "maisaka.replyer.before_request":
-            modified_kwargs = dict(kwargs)
-            reply_tool_args = dict(modified_kwargs.get("reply_tool_args") or {})
+            reply_tool_args = dict(kwargs["reply_tool_args"])
             reply_tool_args["hook_added"] = "yes"
-            modified_kwargs["reply_tool_args"] = reply_tool_args
-            return SimpleNamespace(kwargs=modified_kwargs, aborted=False)
-        return SimpleNamespace(kwargs=dict(kwargs), aborted=False)
+            kwargs["reply_tool_args"] = reply_tool_args
+        return HookDispatchResult(hook_name=hook_name, kwargs=kwargs)
 
 
 def _build_reply_target_history_message() -> SessionBackedMessage:
@@ -76,10 +77,14 @@ def _build_reply_target_history_message() -> SessionBackedMessage:
         timestamp=datetime.now(),
         message_id="msg-1",
         source_kind="user",
+        original_message=cast("SessionMessage", cast(object, SimpleNamespace(is_notify=False))),
     )
 
 
 def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
+    async def build_reply_history() -> list[Any]:
+        return []
+
     target_message = SimpleNamespace(
         message_id="msg-1",
         message_info=SimpleNamespace(
@@ -93,12 +98,21 @@ def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
     runtime = SimpleNamespace(
         find_source_message_by_id=lambda message_id: target_message if message_id == "msg-1" else None,
         log_prefix="[test]",
-        chat_stream=SimpleNamespace(platform=reply_tool_module.CLI_PLATFORM_NAME),
+        chat_stream=SimpleNamespace(
+            platform=reply_tool_module.CLI_PLATFORM_NAME,
+            is_group_session=False,
+            account_id="test",
+            group_id="",
+            user_id="user-1",
+            scope=None,
+        ),
         session_id="session-1",
         _chat_history=chat_history,
+        build_reply_history=build_reply_history,
         _clear_force_continue_until_reply=lambda: None,
         _is_focus_mode_active_for_current_chat=lambda: False,
         record_planner_reply=lambda: None,
+        append_sent_message_to_chat_history=lambda message, source_kind: None,
         _update_stage_status=lambda stage, status: None,
         run_sub_agent=None,
     )
@@ -117,7 +131,7 @@ def test_reply_tool_schema_requires_reference_info() -> None:
 
     assert properties["reference_info"]["type"] == "string"
     assert "无" in properties["reference_info"]["description"]
-    assert parameters_schema["required"] == ["msg_id", "reference_info"]
+    assert parameters_schema["required"] == ["chat_anlyze"]
 
 
 def test_replyer_hook_specs_include_reference_info() -> None:
@@ -147,6 +161,7 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
         request_type="test_reply_reference_info",
     )
     monkeypatch.setattr(generator, "_get_runtime_manager", lambda: fake_hook_manager)
+    monkeypatch.setattr(generator, "_get_reply_scene", lambda _session_id: get_scene(False))
 
     success, _ = await generator.generate_reply_with_context(
         stream_id="session-reply-reference-info",
@@ -165,7 +180,8 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
     assert before_call[1]["reply_tool_args"] == {"route": "fast"}
     assert before_model_call[0] == "maisaka.replyer.before_model_request"
     assert before_model_call[1]["reference_info"] == "测试参考"
-    assert before_model_call[1]["reply_tool_args"] == {"route": "fast", "hook_added": "yes"}
+    assert before_model_call[1]["reply_tool_args"]["route"] == "fast"
+    assert before_model_call[1]["reply_tool_args"]["hook_added"] == "yes"
     assert after_call[0] == "maisaka.replyer.after_response"
     assert after_call[1]["reference_info"] == "测试参考"
     assert after_call[1]["reply_tool_args"] == {"route": "fast", "hook_added": "yes"}
@@ -192,14 +208,15 @@ async def test_reply_tool_passes_reference_info_to_replyer(monkeypatch: pytest.M
     tool_ctx = _build_reply_tool_ctx([])
     invocation = ToolInvocation(
         tool_name="reply",
-        arguments={"msg_id": "msg-1", "reference_info": "已有参考"},
+        arguments={"msg_id": "msg-1", "chat_anlyze": "回复目标", "reference_info": "已有参考"},
         reasoning="测试推理",
     )
 
     result = await reply_tool_module.handle_tool(tool_ctx, invocation)
 
     assert result.success is True
-    assert captured["reply_reason"] == "测试推理"
+    assert captured["reply_reason"] == ""
+    assert captured["reply_tool_args"]["chat_anlyze"] == "回复目标"
     assert captured["reference_info"] == "已有参考"
     assert "reference_info" not in captured["reply_tool_args"]
 
@@ -262,7 +279,7 @@ async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.M
     )
     invocation = ToolInvocation(
         tool_name="reply",
-        arguments={"msg_id": "msg-1", "reference_info": "已有参考"},
+        arguments={"msg_id": "msg-1", "chat_anlyze": "回复目标", "reference_info": "已有参考"},
     )
 
     result = await reply_tool_module.handle_tool(tool_ctx, invocation)
