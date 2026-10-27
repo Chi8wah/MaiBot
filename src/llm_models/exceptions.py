@@ -96,6 +96,12 @@ class ResponseContextException(Exception):
         return self.message or self.default_message
 
 
+class ContentSafetyRejectionException(ResponseContextException):
+    """模型把内容安全拒绝语作为正常响应正文返回。"""
+
+    default_message: str = "模型返回内容安全拒绝语"
+
+
 class RespParseException(ResponseContextException):
     """响应解析错误，常见于响应格式不正确或解析方法不匹配"""
 

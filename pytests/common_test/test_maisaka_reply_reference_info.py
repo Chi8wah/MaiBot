@@ -19,6 +19,7 @@ from src.maisaka.context.messages import SessionBackedMessage, ToolResultMessage
 from src.plugin_runtime.host.hook_spec_registry import HookSpecRegistry
 
 if TYPE_CHECKING:
+    from src.chat.message_receive.message import SessionMessage
     from src.maisaka.reasoning_engine import MaisakaReasoningEngine
     from src.maisaka.runtime import MaisakaHeartFlowChatting
 
@@ -75,6 +76,7 @@ def _build_reply_target_history_message() -> SessionBackedMessage:
         timestamp=datetime.now(),
         message_id="msg-1",
         source_kind="user",
+        original_message=cast("SessionMessage", cast(object, SimpleNamespace(is_notify=False))),
     )
 
 
@@ -92,12 +94,18 @@ def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
     runtime = SimpleNamespace(
         find_source_message_by_id=lambda message_id: target_message if message_id == "msg-1" else None,
         log_prefix="[test]",
-        chat_stream=SimpleNamespace(platform=reply_tool_module.CLI_PLATFORM_NAME),
+        chat_stream=SimpleNamespace(
+            platform=reply_tool_module.CLI_PLATFORM_NAME,
+            is_group_session=False,
+            account_id="test",
+            scope=None,
+        ),
         session_id="session-1",
         _chat_history=chat_history,
         _clear_force_continue_until_reply=lambda: None,
         _is_focus_mode_active_for_current_chat=lambda: False,
         record_planner_reply=lambda: None,
+        append_sent_message_to_chat_history=lambda message, source_kind: None,
         _update_stage_status=lambda stage, status: None,
         run_sub_agent=None,
     )
@@ -116,7 +124,7 @@ def test_reply_tool_schema_requires_reference_info() -> None:
 
     assert properties["reference_info"]["type"] == "string"
     assert "无" in properties["reference_info"]["description"]
-    assert parameters_schema["required"] == ["msg_id", "reference_info"]
+    assert parameters_schema["required"] == ["msg_id", "reply_reference"]
 
 
 def test_replyer_hook_specs_include_reference_info() -> None:
@@ -191,14 +199,15 @@ async def test_reply_tool_passes_reference_info_to_replyer(monkeypatch: pytest.M
     tool_ctx = _build_reply_tool_ctx([])
     invocation = ToolInvocation(
         tool_name="reply",
-        arguments={"msg_id": "msg-1", "reference_info": "已有参考"},
+        arguments={"msg_id": "msg-1", "reply_reference": "回复目标", "reference_info": "已有参考"},
         reasoning="测试推理",
     )
 
     result = await reply_tool_module.handle_tool(tool_ctx, invocation)
 
     assert result.success is True
-    assert captured["reply_reason"] == "测试推理"
+    assert captured["reply_reason"] == ""
+    assert captured["reply_tool_args"]["reply_reference"] == "回复目标"
     assert captured["reference_info"] == "已有参考"
     assert "reference_info" not in captured["reply_tool_args"]
 
@@ -261,7 +270,7 @@ async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.M
     )
     invocation = ToolInvocation(
         tool_name="reply",
-        arguments={"msg_id": "msg-1", "reference_info": "已有参考"},
+        arguments={"msg_id": "msg-1", "reply_reference": "回复目标", "reference_info": "已有参考"},
     )
 
     result = await reply_tool_module.handle_tool(tool_ctx, invocation)
@@ -298,7 +307,7 @@ def test_retro_replyer_keeps_guide_and_reference_info(monkeypatch: pytest.Monkey
         request_type="test_retro_reference_info",
         load_prompt_func=lambda name, **context: context["planner_reasoning"],
     )
-    monkeypatch.setattr(global_config.experimental, "replyer_retro_prompt", True)
+    monkeypatch.setattr(global_config.debug, "replyer_retro_prompt", True)
     monkeypatch.setattr(generator, "_is_retro_group_chat", lambda stream_id: True)
     monkeypatch.setattr(generator, "_build_group_chat_attention_block", lambda session_id: "")
     monkeypatch.setattr(generator, "_build_keyword_reaction_prompt", lambda **kwargs: "")
@@ -312,7 +321,7 @@ def test_retro_replyer_keeps_guide_and_reference_info(monkeypatch: pytest.Monkey
         reply_tool_args=reply_tool_args,
     )
 
-    text = items[0].parts[0].text
+    text = "\n".join(part.text for item in items for part in item.parts if part.text)
     assert "回复指引：\n测试指引" in text
     assert "关键信息参考：\n测试参考" in text
     assert "当前思考：\n测试推理" in text

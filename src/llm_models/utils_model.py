@@ -25,6 +25,7 @@ from src.common.data_models.llm_service_data_models import (
 from src.config.config import config_manager
 from src.config.model_configs import APIProvider, ModelInfo, TaskConfig
 from src.llm_models.exceptions import (
+    ContentSafetyRejectionException,
     EmptyResponseException,
     LLMTaskTimeoutError,
     ModelAttemptFailed,
@@ -81,12 +82,24 @@ DATA_URI_LIMIT_PATTERN = re.compile(
 )
 DATA_URI_RETRY_MARGIN_BYTES = 128 * 1024
 MIN_COMPRESSED_IMAGE_TARGET_SIZE_BYTES = 512 * 1024
+HIGH_RISK_REJECTION_TEXT = "The request was rejected because it was considered high risk"
 EMPTY_TASK_FALLBACKS = {
     "fast_model": "utils",
     "learner": "utils",
 }
 EMBEDDING_TASK_NAMES = {"embedding", "image_embedding"}
 """嵌入类任务：向量空间必须保持一致，因此忽略配置里的选择策略，始终按配置顺序取第一个可用模型"""
+
+
+def _is_high_risk_rejection_response(response: APIResponse) -> bool:
+    """只把整条回复为已知拒绝语且没有工具调用的响应视为失败。"""
+
+    content = response.content
+    return (
+        bool(content)
+        and content.strip().casefold() == HIGH_RISK_REJECTION_TEXT.casefold()
+        and not response.tool_calls
+    )
 
 
 class RequestType(Enum):
@@ -1164,6 +1177,8 @@ class LLMOrchestrator:
                         response = await client.get_image_embedding(active_request)
                     else:
                         response = await client.get_audio_transcriptions(active_request)
+                    if isinstance(active_request, ResponseRequest) and _is_high_risk_rejection_response(response):
+                        raise ContentSafetyRejectionException(ext_info=response.content)
                 self._record_success_generation_attempt(
                     api_provider=api_provider,
                     request=active_request,
@@ -1179,6 +1194,12 @@ class LLMOrchestrator:
                     api_response=response,
                     request=active_request,
                 )
+            except ContentSafetyRejectionException as e:
+                await ensure_attempt_snapshot(e)
+                logger.warning(
+                    f"任务 '{self.request_type or '未知任务'}' 的模型 '{model_info.name}' 返回内容安全拒绝语，切换模型。"
+                )
+                raise ModelAttemptFailed(f"模型 '{model_info.name}' 返回内容安全拒绝语", original_exception=e) from e
             except EmptyResponseException as e:
                 await ensure_attempt_snapshot(e)
                 # 空回复：通常为临时问题，单独记录并重试
