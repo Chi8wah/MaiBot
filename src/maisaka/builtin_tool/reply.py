@@ -1,4 +1,4 @@
-"""reply 工具适配与共用回复执行服务。"""
+﻿"""reply 工具适配与共用回复执行服务。"""
 
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -161,23 +161,14 @@ def get_tool_spec(context: Optional[ToolAvailabilityContext] = None) -> ToolSpec
             "type": "string",
             "minLength": 1,
             "description": (
-                "用一段话，约100-200字描述当前对话局面与查到的关键事实：如同转述一样梳理上文核心逻辑，"
-                "提炼通过搜索或工具查证到的关键事实结论，不写入长段原文时间戳或者具体的消息ID。"
-                "不要原文引用，不评价回复价值、不写回复原因、不构想或指导如何回复。"
+                "转述当前对话局面和关键事实，包括人物关系、回忆和查证到的信息。"
+                "与本次回复相关的工具结果应尽可能完整保留。"
+                "省略无关的原文、时间戳和消息 ID，不评价回复价值，不写回复原因、回复指引或回复正文。"
             ),
         },
         "reply_guide": {
             "type": "string",
             "description": "回复需要注意的事项和回复指引，包含当前聊天状态，情感态度等等。",
-        },
-        "reference_info": {
-            "type": "string",
-            "description": (
-                "上下文中的关键信息，包括人物关系，情感关系，事实信息，回忆信息，聊天情况。"
-                "对于工具返回的信息，应尽可能地保留工具返回的完整结果以提供最大程度的参考。"
-                "这些信息将为回复提供信息参考；如果没有可参考的信息，请填写“无”。"
-            ),
-            "default": "无",
         },
         "reply_style": {
             "type": "string",

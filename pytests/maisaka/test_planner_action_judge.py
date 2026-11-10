@@ -103,8 +103,8 @@ def test_judge_reuses_text_tool_parsing_and_retry(monkeypatch, action, invalid_c
             model_info=SimpleNamespace(name="test", model_identifier="test"), context_items=messages,
             tool_options=options.tool_options,
         )
-        response = await orchestrator._attempt_request_on_model(provider, provider_client, request)
-        return LLMResponseResult(output_items=response.output_items, model_name="test")
+        attempt = await orchestrator._attempt_request_on_model(provider, provider_client, request)
+        return LLMResponseResult(output_items=attempt.api_response.output_items, model_name="test")
 
     monkeypatch.setattr(module, "LLMServiceClient", lambda *a, **kw: SimpleNamespace(
         generate_response_with_context=generate,

@@ -1,16 +1,19 @@
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, cast
+from unittest.mock import AsyncMock
 
 import inspect
 
 import pytest
 
 from src.chat.replyer import maisaka_generator as replyer_module
+from src.chat.replyer.maisaka_generator_base import MaisakaReplyContext
 from src.common.data_models.llm_service_data_models import LLMResponseResult
 from src.common.data_models.message_component_data_model import MessageSequence, TextComponent
 from src.common.data_models.reply_generation_data_models import GenerationMetrics, LLMCompletionResult, ReplyGenerationResult
 from src.common.i18n import use_locale
+from src.config.config import global_config
 from src.core.tooling import ToolInvocation
 from src.llm_models.payload_content.context_item import ContextTextPart
 from src.maisaka.builtin_tool import reply as reply_tool_module
@@ -35,8 +38,8 @@ async def _call_message_factory(message_factory: Callable[..., Any], client: obj
 
 
 class _FakeLLMServiceClient:
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        del args
+    def __init__(self, *, task_name: str, **kwargs: Any) -> None:
+        self.task_name = task_name
         del kwargs
 
     async def generate_response_with_context(
@@ -123,14 +126,15 @@ def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
     )
 
 
-def test_reply_tool_schema_requires_reference_info() -> None:
+def test_reply_tool_schema_uses_chat_analysis() -> None:
     tool_spec = reply_tool_module.get_tool_spec()
     parameters_schema = tool_spec.parameters_schema
     assert parameters_schema is not None
     properties = parameters_schema["properties"]
 
-    assert properties["reference_info"]["type"] == "string"
-    assert "无" in properties["reference_info"]["description"]
+    assert "reference_info" not in properties
+    assert properties["chat_anlyze"]["type"] == "string"
+    assert "工具结果" in properties["chat_anlyze"]["description"]
     assert parameters_schema["required"] == ["chat_anlyze"]
 
 
@@ -152,6 +156,7 @@ def test_replyer_hook_specs_include_reference_info() -> None:
 
 @pytest.mark.asyncio
 async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(global_config.debug, "save_maisaka_reasoning", False)
     monkeypatch.setattr(replyer_module, "LLMServiceClient", _FakeLLMServiceClient)
     monkeypatch.setattr(replyer_module, "load_prompt", lambda *args, **kwargs: "reply prompt")
 
@@ -162,6 +167,7 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
     )
     monkeypatch.setattr(generator, "_get_runtime_manager", lambda: fake_hook_manager)
     monkeypatch.setattr(generator, "_get_reply_scene", lambda _session_id: get_scene(False))
+    monkeypatch.setattr(generator, "_build_reply_context", AsyncMock(return_value=MaisakaReplyContext()))
 
     success, _ = await generator.generate_reply_with_context(
         stream_id="session-reply-reference-info",
@@ -294,11 +300,12 @@ async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.M
 
 
 @pytest.mark.parametrize("prompt_profile", ["reply", "mai_replier"])
-def test_replyer_prompt_keeps_guide_and_reference_info(prompt_profile: str) -> None:
+def test_replyer_prompt_keeps_guide_and_reference_info(prompt_profile: str, monkeypatch: pytest.MonkeyPatch) -> None:
     generator = replyer_module.MaisakaReplyGenerator(
         chat_stream=None,
         request_type="test_reference_info_prompt",
     )
+    monkeypatch.setattr(generator, "_get_reply_scene", lambda _session_id: get_scene(False))
     reply_tool_args = {"reply_guide": "测试指引", "chat_anlyze": "测试对话分析"}
 
     with use_locale("zh-CN"):
