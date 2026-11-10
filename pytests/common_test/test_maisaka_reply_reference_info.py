@@ -10,6 +10,7 @@ from src.chat.replyer import maisaka_generator as replyer_module
 from src.common.data_models.llm_service_data_models import LLMResponseResult
 from src.common.data_models.message_component_data_model import MessageSequence, TextComponent
 from src.common.data_models.reply_generation_data_models import GenerationMetrics, LLMCompletionResult, ReplyGenerationResult
+from src.config.config import global_config
 from src.core.tooling import ToolInvocation
 from src.maisaka.builtin_tool import reply as reply_tool_module
 from src.maisaka.builtin_tool.context import BuiltinToolRuntimeContext
@@ -121,14 +122,15 @@ def _build_reply_tool_ctx(chat_history: list[Any]) -> BuiltinToolRuntimeContext:
     )
 
 
-def test_reply_tool_schema_requires_reference_info() -> None:
+def test_reply_tool_schema_uses_reply_reference() -> None:
     tool_spec = reply_tool_module.get_tool_spec()
     parameters_schema = tool_spec.parameters_schema
     assert parameters_schema is not None
     properties = parameters_schema["properties"]
 
-    assert properties["reference_info"]["type"] == "string"
-    assert "无" in properties["reference_info"]["description"]
+    assert "reference_info" not in properties
+    assert properties["reply_reference"]["type"] == "string"
+    assert "工具结果" in properties["reply_reference"]["description"]
     assert parameters_schema["required"] == ["msg_id", "reply_reference"]
 
 
@@ -150,6 +152,7 @@ def test_replyer_hook_specs_include_reference_info() -> None:
 
 @pytest.mark.asyncio
 async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(global_config.debug, "save_maisaka_reasoning", False)
     monkeypatch.setattr(replyer_module, "LLMServiceClient", _FakeLLMServiceClient)
     monkeypatch.setattr(replyer_module, "load_prompt", lambda *args, **kwargs: "reply prompt")
 
