@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 from sqlmodel import Session, create_engine
 import pytest
@@ -11,6 +11,7 @@ from src.common.data_models.mai_message_data_model import MessageInfo, UserInfo
 from src.common.data_models.message_component_data_model import (
     ForwardComponent,
     ForwardNodeComponent,
+    ImageComponent,
     MessageSequence,
     ReplyComponent,
     TextComponent,
@@ -69,8 +70,7 @@ async def test_planner_includes_quote_text_when_original_is_outside_window(
     monkeypatch: pytest.MonkeyPatch,
     include_forward: bool,
 ) -> None:
-    lookup = AsyncMock()
-    monkeypatch.setattr(SessionMessage, "process_reply_component", lookup)
+    monkeypatch.setattr("src.maisaka.context.planner_messages.find_messages", lambda **_: [])
     quote = ReplyComponent(
         "1001",
         target_message_content="访谈会在周五晚上直播",
@@ -97,7 +97,6 @@ async def test_planner_includes_quote_text_when_original_is_outside_window(
     assert '<quote msg_id="1001" user="主持人">\n访谈会在周五晚上直播\n</quote>\n在哪个平台播出？' in text
     if include_forward:
         assert "转发里的正文" in text
-    lookup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -109,7 +108,7 @@ async def test_planner_resolves_legacy_quote_in_its_session(
 ) -> None:
     db = create_engine(f"sqlite:///{tmp_path / 'messages.db'}")
     Messages.__table__.create(db)
-    monkeypatch.setattr("src.chat.message_receive.message.get_db_session", lambda **_: Session(db))
+    monkeypatch.setattr("src.common.message_repository.get_db_session", lambda **_: Session(db))
     original = _make_message("older-platform-message-id", "发送者", MessageSequence([TextComponent("早期原文 <测试>")]))
     original.session_id = original_session
     original.processed_plain_text = "早期原文 <测试>"
@@ -130,6 +129,49 @@ async def test_planner_resolves_legacy_quote_in_its_session(
     else:
         assert "<quote " not in text
     assert quote.target_message_content is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("caption", "cached_text", "saved_quote", "expected"),
+    [
+        ("", "海报上的人是解说员林晓", "[image]", "[图片：海报上的人是解说员林晓]"),
+        ("颁奖现场", "海报上的人是解说员林晓", "颁奖现场[image]", "颁奖现场[图片：海报上的人是解说员林晓]"),
+        ("", "", "[图片：海报上的人是解说员林晓]", "[图片：海报上的人是解说员林晓]"),
+    ],
+    ids=["image-only", "with-caption", "saved-description"],
+)
+async def test_replies_to_stored_images_include_cached_description(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caption: str,
+    cached_text: str,
+    saved_quote: str,
+    expected: str,
+) -> None:
+    from src.chat.image_system.image_manager import image_manager
+
+    image = ImageComponent(binary_hash="stored-image-hash")
+    original = _make_message("1003", "观众", MessageSequence([TextComponent(caption), image]))
+    original.processed_plain_text = caption
+    db = create_engine(f"sqlite:///{tmp_path / 'messages.db'}")
+    Messages.__table__.create(db)
+    monkeypatch.setattr("src.common.message_repository.get_db_session", lambda **_: Session(db))
+    with Session(db) as session:
+        session.add(original.to_db_instance())
+        session.commit()
+
+    cached_description = Mock(return_value=cached_text)
+    monkeypatch.setattr(image_manager, "get_cached_image_description", cached_description)
+    quote = ReplyComponent("1003", target_message_content=saved_quote, target_message_sender_nickname="观众")
+    message = _make_message("1004", "用户", MessageSequence([quote, TextComponent("这个人是谁？")]))
+
+    text = await _planner_message_text(message)
+
+    assert '<quote msg_id="1003" user="观众">\n' in text
+    assert f"{expected}\n</quote>\n这个人是谁？" in text
+    assert "[image]" not in text
+    cached_description.assert_called_once_with(image.binary_hash)
 
 
 def test_sent_message_keeps_quote_text_in_planner_history() -> None:

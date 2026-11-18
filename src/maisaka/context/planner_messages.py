@@ -5,15 +5,23 @@ from datetime import datetime
 from html import escape
 from typing import Dict, Iterable, Optional, Sequence
 
+import asyncio
+
 from src.chat.message_receive.chat_manager import chat_manager
-from src.chat.message_receive.message import MsgIDMapping, SessionMessage
+from src.chat.message_receive.message import SessionMessage
 from src.common.data_models.message_component_data_model import (
+    ImageComponent,
     MessageSequence,
     ReplyComponent,
     StandardMessageComponents,
 )
+from src.common.logger import get_logger
+from src.common.message_repository import find_messages
 
 from .message_id_alias import to_display_message_id
+from .message_adapter import build_visible_text_from_sequence
+
+logger = get_logger("maisaka_planner_messages")
 
 
 def build_planner_prefix(
@@ -132,8 +140,56 @@ def render_planner_quote_text(components: Iterable[StandardMessageComponents]) -
     return "".join(blocks.values())
 
 
+def _render_quoted_image_message(source: SessionMessage) -> str:
+    """渲染引用消息里的图片和随图文字，使用已缓存的图片描述。"""
+    components = [component for component in source.raw_message.components if not isinstance(component, ReplyComponent)]
+    images = [component for component in components if isinstance(component, ImageComponent)]
+    if not images:
+        return ""
+
+    from src.chat.image_system.image_manager import image_manager
+
+    placeholders = {"", "[image]", "[图片，识别中.....]"}
+    for image in images:
+        if image.binary_hash and image.content.strip() in placeholders:
+            description = image_manager.get_cached_image_description(image.binary_hash)
+            if description:
+                image.content = f"[图片：{description}]"
+
+    if all(image.content.strip() in placeholders for image in images):
+        return ""
+    return build_visible_text_from_sequence(MessageSequence(components)).strip()
+
+
+def _resolve_planner_quote(
+    message: SessionMessage,
+    target_id: str,
+    quote: ReplyComponent,
+) -> ReplyComponent:
+    """读取同会话原消息，保留现成文本引用并补全图片或仅含编号的引用。"""
+    matches = find_messages(session_id=message.session_id, platform=message.platform, message_id=target_id, limit=2)
+    if len(matches) > 1:
+        logger.warning(f"引用消息 ID 在当前聊天流中不唯一，session_id={message.session_id}，message_id={target_id}")
+        return quote
+    if not matches:
+        return quote
+
+    source = matches[0]
+    image_quote = _render_quoted_image_message(source)
+    if not image_quote and (quote.target_message_content or "").strip():
+        return quote
+
+    sender = source.message_info.user_info
+    resolved = copy(quote)
+    resolved.target_message_content = image_quote or source.processed_plain_text
+    resolved.target_message_sender_id = sender.user_id
+    resolved.target_message_sender_nickname = sender.user_nickname
+    resolved.target_message_sender_cardname = sender.user_cardname
+    return resolved
+
+
 async def resolve_planner_quote_text(message: SessionMessage) -> str:
-    """复用同会话的引用解析，补齐只保存了目标编号的旧消息。"""
+    """为 Planner 构造消息引用文本，并从同会话原消息补全图片描述。"""
     quotes: Dict[str, ReplyComponent] = {}
     for component in message.raw_message.components:
         if not isinstance(component, ReplyComponent):
@@ -146,14 +202,8 @@ async def resolve_planner_quote_text(message: SessionMessage) -> str:
             quotes[target_id] = component
 
     if quotes and message.session_id:
-        mapping = MsgIDMapping()
         for target_id, component in quotes.items():
-            if (component.target_message_content or "").strip():
-                continue
-            resolved = copy(component)
-            resolved.target_message_id = target_id
-            await message.process_reply_component(resolved, mapping)
-            quotes[target_id] = resolved
+            quotes[target_id] = await asyncio.to_thread(_resolve_planner_quote, message, target_id, component)
 
     return render_planner_quote_text(quotes.values())
 
