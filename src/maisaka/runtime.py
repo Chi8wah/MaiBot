@@ -587,6 +587,7 @@ class MaisakaHeartFlowChatting(MaisakaRuntimeDisplayMixin):
             from src.maisaka.context.planner_messages import (
                 build_planner_prefix,
                 extract_quote_ids_from_message_sequence,
+                render_planner_quote_text,
             )
 
             user_info = message.message_info.user_info
@@ -603,6 +604,7 @@ class MaisakaHeartFlowChatting(MaisakaRuntimeDisplayMixin):
                 include_chat_id=include_chat_id,
                 is_self_message=source_kind == "guided_reply",
             )
+            planner_prefix += render_planner_quote_text(message.raw_message.components)
             history_message = SessionBackedMessage.from_session_message(
                 message,
                 raw_message=build_prefixed_message_sequence(message.raw_message, planner_prefix),

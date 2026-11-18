@@ -650,7 +650,8 @@ class LLMOrchestrator:
         api_provider = TempMethodsLLMUtils.get_provider_by_name(model_info.api_provider)
         client = await client_registry.get_client_class_instance_async(api_provider)
         started = time.time()
-        response = await self._attempt_request_on_model_with_timeout(api_provider, client, request, model_info.name)
+        attempt_result = await self._attempt_request_on_model_with_timeout(api_provider, client, request, model_info.name)
+        response = attempt_result.api_response
         if response.usage is not None:
             await asyncio.to_thread(
                 llm_usage_recorder.record_usage_to_database,

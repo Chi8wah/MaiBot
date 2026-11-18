@@ -94,7 +94,10 @@ from src.maisaka.monitor.events import (
     emit_planner_snapshot,
 )
 from src.maisaka.memory.person_profile import build_person_profile_injection_messages
-from src.maisaka.context.planner_messages import build_planner_user_prefix_from_session_message
+from src.maisaka.context.planner_messages import (
+    build_planner_user_prefix_from_session_message,
+    resolve_planner_quote_text,
+)
 from src.maisaka.visual.mode_utils import resolve_enable_visual_planner
 
 if TYPE_CHECKING:
@@ -1340,6 +1343,7 @@ class MaisakaReasoningEngine:
             include_chat_id=include_chat_id,
             is_self_message=source_kind == "guided_reply",
         )
+        planner_prefix += await resolve_planner_quote_text(message)
         if contains_complex_message(source_sequence):
             return ComplexSessionMessage.from_session_message(
                 message,

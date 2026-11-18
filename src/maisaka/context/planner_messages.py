@@ -1,17 +1,19 @@
 ﻿"""Maisaka 规划器消息构造工具。"""
 
+from copy import copy
 from datetime import datetime
 from html import escape
-from typing import Optional, Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
-from src.chat.message_receive.message import SessionMessage
 from src.chat.message_receive.chat_manager import chat_manager
+from src.chat.message_receive.message import MsgIDMapping, SessionMessage
 from src.common.data_models.message_component_data_model import (
     MessageSequence,
     ReplyComponent,
+    StandardMessageComponents,
 )
 
-from src.maisaka.context.message_id_alias import to_display_message_id
+from .message_id_alias import to_display_message_id
 
 
 def build_planner_prefix(
@@ -106,6 +108,54 @@ def extract_quote_ids_from_message_sequence(message_sequence: MessageSequence) -
         seen.add(quote_id)
         quote_ids.append(quote_id)
     return quote_ids
+
+
+def render_planner_quote_text(components: Iterable[StandardMessageComponents]) -> str:
+    """将已解析的引用原文放在消息正文前，使用与 quote 属性一致的消息编号。"""
+    blocks: Dict[str, str] = {}
+    for component in components:
+        if not isinstance(component, ReplyComponent):
+            continue
+
+        quote_id = escape(to_display_message_id(component.target_message_id), quote=True)
+        content = (component.target_message_content or "").strip()
+        if not quote_id or not content or quote_id in blocks:
+            continue
+
+        sender = (
+            component.target_message_sender_cardname
+            or component.target_message_sender_nickname
+            or component.target_message_sender_id
+        )
+        sender_attr = f' user="{escape(sender, quote=True)}"' if sender else ""
+        blocks[quote_id] = f'<quote msg_id="{quote_id}"{sender_attr}>\n{escape(content, quote=False)}\n</quote>\n'
+    return "".join(blocks.values())
+
+
+async def resolve_planner_quote_text(message: SessionMessage) -> str:
+    """复用同会话的引用解析，补齐只保存了目标编号的旧消息。"""
+    quotes: Dict[str, ReplyComponent] = {}
+    for component in message.raw_message.components:
+        if not isinstance(component, ReplyComponent):
+            continue
+        target_id = component.target_message_id.strip()
+        if not target_id:
+            continue
+        existing = quotes.get(target_id)
+        if existing is None or not (existing.target_message_content or "").strip():
+            quotes[target_id] = component
+
+    if quotes and message.session_id:
+        mapping = MsgIDMapping()
+        for target_id, component in quotes.items():
+            if (component.target_message_content or "").strip():
+                continue
+            resolved = copy(component)
+            resolved.target_message_id = target_id
+            await message.process_reply_component(resolved, mapping)
+            quotes[target_id] = resolved
+
+    return render_planner_quote_text(quotes.values())
 
 
 def build_planner_user_prefix_from_session_message(
