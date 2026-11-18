@@ -133,12 +133,13 @@ def test_reply_tool_schema_uses_chat_analysis() -> None:
     properties = parameters_schema["properties"]
 
     assert "reference_info" not in properties
+    assert "reply_guide" not in properties
     assert properties["chat_anlyze"]["type"] == "string"
-    assert "工具结果" in properties["chat_anlyze"]["description"]
+    assert "与本次回复相关的工具结果应尽可能完整保留" in properties["chat_anlyze"]["description"]
     assert parameters_schema["required"] == ["chat_anlyze"]
 
 
-def test_replyer_hook_specs_include_reference_info() -> None:
+def test_replyer_hook_specs_omit_reference_info() -> None:
     registry = HookSpecRegistry()
     register_maisaka_hook_specs(registry)
 
@@ -150,12 +151,12 @@ def test_replyer_hook_specs_include_reference_info() -> None:
         hook_spec = registry.get_hook_spec(hook_name)
         assert hook_spec is not None
         parameters_schema = hook_spec.parameters_schema
-        assert parameters_schema["properties"]["reference_info"]["type"] == "string"
-        assert "reference_info" in parameters_schema["required"]
+        assert "reference_info" not in parameters_schema["properties"]
+        assert "reference_info" not in parameters_schema["required"]
 
 
 @pytest.mark.asyncio
-async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_replyer_hooks_forward_tool_args_without_reference_info(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(global_config.debug, "save_maisaka_reasoning", False)
     monkeypatch.setattr(replyer_module, "LLMServiceClient", _FakeLLMServiceClient)
     monkeypatch.setattr(replyer_module, "load_prompt", lambda *args, **kwargs: "reply prompt")
@@ -173,7 +174,6 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
         stream_id="session-reply-reference-info",
         chat_history=[],
         reply_reason="测试原因",
-        reference_info="测试参考",
         reply_tool_args={"route": "fast"},
     )
 
@@ -182,53 +182,19 @@ async def test_replyer_hooks_receive_reference_info(monkeypatch: pytest.MonkeyPa
     before_model_call = fake_hook_manager.calls[1]
     after_call = fake_hook_manager.calls[2]
     assert before_call[0] == "maisaka.replyer.before_request"
-    assert before_call[1]["reference_info"] == "测试参考"
+    assert "reference_info" not in before_call[1]
     assert before_call[1]["reply_tool_args"] == {"route": "fast"}
     assert before_model_call[0] == "maisaka.replyer.before_model_request"
-    assert before_model_call[1]["reference_info"] == "测试参考"
+    assert "reference_info" not in before_model_call[1]
     assert before_model_call[1]["reply_tool_args"]["route"] == "fast"
     assert before_model_call[1]["reply_tool_args"]["hook_added"] == "yes"
     assert after_call[0] == "maisaka.replyer.after_response"
-    assert after_call[1]["reference_info"] == "测试参考"
+    assert "reference_info" not in after_call[1]
     assert after_call[1]["reply_tool_args"] == {"route": "fast", "hook_added": "yes"}
 
 
 @pytest.mark.asyncio
-async def test_reply_tool_passes_reference_info_to_replyer(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, Any] = {}
-    fake_reply_result = ReplyGenerationResult(
-        success=True,
-        completion=LLMCompletionResult(response_text="测试回复"),
-        metrics=GenerationMetrics(overall_ms=11.5),
-        monitor_detail={},
-    )
-
-    class _FakeReplyer:
-        async def generate_reply_with_context(self, **kwargs: Any) -> tuple[bool, ReplyGenerationResult]:
-            captured.update(kwargs)
-            return True, fake_reply_result
-
-    monkeypatch.setattr(reply_tool_module.replyer_manager, "get_replyer", lambda **kwargs: _FakeReplyer())
-    monkeypatch.setattr(reply_tool_module, "render_cli_message", lambda text: text)
-
-    tool_ctx = _build_reply_tool_ctx([])
-    invocation = ToolInvocation(
-        tool_name="reply",
-        arguments={"msg_id": "msg-1", "chat_anlyze": "回复目标", "reference_info": "已有参考"},
-        reasoning="测试推理",
-    )
-
-    result = await reply_tool_module.handle_tool(tool_ctx, invocation)
-
-    assert result.success is True
-    assert captured["reply_reason"] == ""
-    assert captured["reply_tool_args"]["chat_anlyze"] == "回复目标"
-    assert captured["reference_info"] == "已有参考"
-    assert "reference_info" not in captured["reply_tool_args"]
-
-
-@pytest.mark.asyncio
-async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reply_tool_passes_analysis_without_memory_reference(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
     fake_reply_result = ReplyGenerationResult(
         success=True,
@@ -247,79 +213,59 @@ async def test_reply_tool_merges_memory_reference_metadata(monkeypatch: pytest.M
 
     tool_ctx = _build_reply_tool_ctx(
         [
-            ToolResultMessage(
-                content="旧检索完成",
-                timestamp=datetime.now(),
-                tool_call_id="tool-call-old",
-                logical_turn_id="turn-old",
-                tool_name="query_memory",
-                metadata={"replyer_memory_reference": "旧记忆不应合并"},
-            ),
             _build_reply_target_history_message(),
             ToolResultMessage(
-                content="失败检索",
-                timestamp=datetime.now(),
-                tool_call_id="tool-call-failed",
-                logical_turn_id="turn-failed",
-                tool_name="query_memory",
-                success=False,
-                metadata={"replyer_memory_reference": "失败记忆不应合并"},
-            ),
-            ToolResultMessage(
-                content="其他工具",
-                timestamp=datetime.now(),
-                tool_call_id="tool-call-other",
-                logical_turn_id="turn-other",
-                tool_name="other_tool",
-                metadata={"replyer_memory_reference": "其他工具记忆不应合并"},
-            ),
-            ToolResultMessage(
-                content="检索完成",
+                content="未经 Planner 整理的检索结果",
                 timestamp=datetime.now(),
                 tool_call_id="tool-call-1",
                 logical_turn_id="turn-1",
                 tool_name="query_memory",
-                metadata={"replyer_memory_reference": "【长期记忆检索结果-内部参考】\n1. 测试记忆"},
+                metadata={"replyer_memory_reference": "旧版记忆直传文本"},
             ),
         ]
     )
     invocation = ToolInvocation(
         tool_name="reply",
-        arguments={"msg_id": "msg-1", "chat_anlyze": "回复目标", "reference_info": "已有参考"},
+        arguments={"msg_id": "msg-1", "chat_anlyze": "Planner 整理的事实"},
+        reasoning="测试推理",
     )
 
     result = await reply_tool_module.handle_tool(tool_ctx, invocation)
 
     assert result.success is True
-    assert "已有参考" in captured["reference_info"]
-    assert "长期记忆检索结果-内部参考" in captured["reference_info"]
-    assert "旧记忆不应合并" not in captured["reference_info"]
-    assert "失败记忆不应合并" not in captured["reference_info"]
-    assert "其他工具记忆不应合并" not in captured["reference_info"]
+    assert captured["reply_reason"] == ""
+    assert captured["reply_tool_args"]["chat_anlyze"] == "Planner 整理的事实"
+    assert "reference_info" not in captured
     assert "reference_info" not in captured["reply_tool_args"]
 
 
 @pytest.mark.parametrize("prompt_profile", ["reply", "mai_replier"])
-def test_replyer_prompt_keeps_guide_and_reference_info(prompt_profile: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_replyer_prompt_uses_analysis_without_removed_fields(
+    prompt_profile: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     generator = replyer_module.MaisakaReplyGenerator(
         chat_stream=None,
         request_type="test_reference_info_prompt",
     )
     monkeypatch.setattr(generator, "_get_reply_scene", lambda _session_id: get_scene(False))
-    reply_tool_args = {"reply_guide": "测试指引", "chat_anlyze": "测试对话分析"}
+    reply_tool_args = {
+        "chat_anlyze": "测试对话分析",
+        "reply_guide": "旧回复指引",
+        "reference_info": "旧关键信息",
+    }
+    original_args = reply_tool_args.copy()
 
     with use_locale("zh-CN"):
         items = generator._build_request_messages(
             chat_history=[],
             reply_message=None,
             reply_reason="测试推理",
-            reference_info="测试参考",
             reply_tool_args=reply_tool_args,
             prompt_profile=prompt_profile,
         )
 
     text = "\n".join(part.text for part in items[-1].parts if isinstance(part, ContextTextPart))
-    assert "回复指引：\n测试指引" in text
-    assert "关键信息参考：\n测试参考" in text
     assert "测试对话分析" in text
-    assert reply_tool_args == {"reply_guide": "测试指引", "chat_anlyze": "测试对话分析"}
+    assert "旧回复指引" not in text
+    assert "旧关键信息" not in text
+    assert reply_tool_args == original_args
